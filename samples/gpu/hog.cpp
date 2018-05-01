@@ -165,7 +165,7 @@ Args::Args()
     write_video = false;
     dst_video_fps = 24.;
 
-    make_gray = false;
+    make_gray = true;
 
     resize_src = false;
     width = 640;
