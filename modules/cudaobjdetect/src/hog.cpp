@@ -284,7 +284,7 @@ namespace
         float* block_hists;
         cudaStream_t stream;
         HOG_Impl* hog_agent;
-        GpuMat img;
+        const GpuMat *img;
     };
 
     void* thread_compute_gradients(void* _node);
@@ -862,11 +862,11 @@ namespace
                             in_buf->hog_agent->cells_per_block_.width, in_buf->hog_agent->cells_per_block_.height,
                             in_buf->stream);
 
-                    switch (in_buf->img.type())
+                    switch (in_buf->img->type())
                     {
                         case CV_8UC1:
                             hog::compute_gradients_8UC1(in_buf->hog_agent->nbins_,
-                                    in_buf->height, in_buf->width, in_buf->img,
+                                    in_buf->height, in_buf->width, *(in_buf->img),
                                     angleScale,
                                     in_buf->grad, in_buf->qangle,
                                     in_buf->hog_agent->gamma_correction_,
@@ -874,7 +874,7 @@ namespace
                             break;
                         case CV_8UC4:
                             hog::compute_gradients_8UC4(in_buf->hog_agent->nbins_,
-                                    in_buf->height, in_buf->width, in_buf->img,
+                                    in_buf->height, in_buf->width, *(in_buf->img),
                                     angleScale,
                                     in_buf->grad, in_buf->qangle,
                                     in_buf->hog_agent->gamma_correction_,
@@ -924,7 +924,7 @@ namespace
         out_buf->block_hists = block_hists.ptr<float>();
         out_buf->stream = StreamAccessor::getStream(stream);
         out_buf->hog_agent = this;
-        out_buf->img = img;
+        out_buf->img = &img;
 
         CheckError(pgm_complete(n0));
 
