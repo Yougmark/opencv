@@ -233,6 +233,9 @@ namespace
         int group_threshold_;
         int descr_format_;
         Size cells_per_block_;
+        // Coefficients of the separating plane
+        float free_coef_;
+        GpuMat detector_;
     private:
         //Size win_size_;
         //Size block_size_;
@@ -256,9 +259,6 @@ namespace
         void computeBlockHistograms(const GpuMat& img, GpuMat& block_hists, Stream& stream);
 //        void computeGradient(const GpuMat& img, GpuMat& grad, GpuMat& qangle, Stream& stream);
 
-        // Coefficients of the separating plane
-        float free_coef_;
-        GpuMat detector_;
 
         // for PGM^RT
         //void* thread_compute_hists(void* _node);
@@ -284,12 +284,16 @@ namespace
         float* block_hists;
         cudaStream_t stream;
         HOG_Impl* hog_agent;
-        const GpuMat *img;
+        //const GpuMat *img;
+        GpuMat img;
+        GpuMat labels;
+        std::vector<double>* confidences;
     };
 
     void* thread_compute_gradients(void* _node);
     void* thread_compute_hists(void* _node);
     void* thread_normalize_hists(void* _node);
+    void* thread_classify_hists(void* _node);
     HOG_Impl::HOG_Impl(Size win_size,
                        Size block_size,
                        Size block_stride,
@@ -355,7 +359,7 @@ namespace
         CheckError(pgm_init_node(&n2, g, "n2"));
         CheckError(pgm_init_node(&n3, g, "n3"));
         CheckError(pgm_init_node(&n4, g, "n4"));
-        //CheckError(pgm_init_node(&n5, g, "n5"));
+        CheckError(pgm_init_node(&n5, g, "n5"));
         //CheckError(pgm_init_node(&n6, g, "n6"));
 
         CheckError(pgm_init_edge(&e0_1, n0, n1, "e0_1", &fifo_attr));
@@ -367,7 +371,7 @@ namespace
         CheckError(pgm_init_edge(&e0_2, n1, n2, "e0_2", &fifo_attr));
         CheckError(pgm_init_edge(&e0_3, n2, n3, "e0_3", &fast_mq_attr));
         CheckError(pgm_init_edge(&e0_4, n3, n4, "e0_4", &mq_attr));
-        //CheckError(pgm_init_edge(&e0_5, n4, n5, "e0_5", &fast_fifo_attr));
+        CheckError(pgm_init_edge(&e0_5, n4, n5, "e0_5", &fast_fifo_attr));
 
         //CheckError(pgm_init_edge(&e1_6, n1, n6, "e1_6", &fast_mq_attr));
         //CheckError(pgm_init_edge(&e2_6, n2, n6, "e2_6", &fifo_attr));
@@ -376,14 +380,15 @@ namespace
         //CheckError(pgm_init_edge(&e5_6, n5, n6, "e5_6", &fast_fifo_attr));
 
 
-        pthread_barrier_init(&init_barrier, 0, 4);
+        pthread_barrier_init(&init_barrier, 0, 5);
         //pthread_create(&t0, 0, thread, &n0);
         printf("right before creating t1 thread...\n");
         pthread_create(&t1, 0, thread_compute_gradients, &n1);
         pthread_create(&t2, 0, thread_compute_hists, &n2);
         pthread_create(&t3, 0, thread_normalize_hists, &n3);
+        pthread_create(&t4, 0, thread_classify_hists, &n4);
         CheckError(pgm_claim_node(n0));
-        CheckError(pgm_claim_node(n4));
+        CheckError(pgm_claim_node(n5));
 
         printf("right before barrier in main thread...\n");
         pthread_barrier_wait(&init_barrier);
@@ -401,13 +406,13 @@ namespace
         CheckError(pgm_terminate(n0));
         pthread_barrier_wait(&init_barrier);
         CheckError(pgm_release_node(n0));
-        CheckError(pgm_release_node(n4));
+        CheckError(pgm_release_node(n5));
         printf("Joining pthreads...\n");
         //pthread_join(t0, 0);
         pthread_join(t1, 0);
         pthread_join(t2, 0);
         pthread_join(t3, 0);
-        //pthread_join(t4, 0);
+        pthread_join(t4, 0);
         //pthread_join(t5, 0);
         //pthread_join(t6, 0);
 
@@ -497,26 +502,53 @@ namespace
 
         BufferPool pool(Stream::Null());
 
-        GpuMat block_hists = pool.getBuffer(1, getTotalHistSize(img.size()), CV_32FC1);
-        computeBlockHistograms(img, block_hists, Stream::Null());
-
         Size wins_per_img = numPartsWithin(img.size(), win_size_, win_stride_);
+        GpuMat labels;
+        if (confidences == NULL)
+        {
+            labels = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
+        }
+        else
+        {
+            labels = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
+        }
+
+        GpuMat block_hists = pool.getBuffer(1, getTotalHistSize(img.size()), CV_32FC1);
+        GpuMat grad       = pool.getBuffer(img.size(), CV_32FC2);
+        GpuMat qangle     = pool.getBuffer(img.size(), CV_8UC2);
+
+        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_out(n0, out_edge, 1));
+        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+        if (out_buf == NULL)
+            fprintf(stdout, "compute gradients out buffer is NULL\n");
+        out_buf->height = img.rows;
+        out_buf->width = img.cols;
+        out_buf->grad = grad;
+        out_buf->qangle = qangle;
+        out_buf->block_hists = block_hists.ptr<float>();
+        out_buf->stream = StreamAccessor::getStream(Stream::Null());
+        out_buf->hog_agent = this;
+        //out_buf->img = &img;
+        out_buf->img = img;
+        out_buf->confidences = confidences;
+        out_buf->labels = labels;
+
+        CheckError(pgm_complete(n0));
+
+        // computing gradients
+
+        // computing hists
+
+        // normalizing hists
+
+        // classify hists
+
+        pgm_wait(n5);
+        free(out_edge);
 
         if (confidences == NULL)
         {
-            GpuMat labels = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
-
-            hog::classify_hists(win_size_.height, win_size_.width,
-                                block_stride_.height, block_stride_.width,
-                                win_stride_.height, win_stride_.width,
-                                img.rows, img.cols,
-                                block_hists.ptr<float>(),
-                                detector_.ptr<float>(),
-                                (float)free_coef_,
-                                (float)hit_threshold_,
-                                cell_size_.width, cells_per_block_.width,
-                                labels.ptr());
-
             Mat labels_host;
             labels.download(labels_host);
             unsigned char* vec = labels_host.ptr();
@@ -531,19 +563,6 @@ namespace
         }
         else
         {
-            GpuMat labels = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
-
-            hog::compute_confidence_hists(win_size_.height, win_size_.width,
-                                          block_stride_.height, block_stride_.width,
-                                          win_stride_.height, win_stride_.width,
-                                          img.rows, img.cols,
-                                          block_hists.ptr<float>(),
-                                          detector_.ptr<float>(),
-                                          (float)free_coef_,
-                                          (float)hit_threshold_,
-                                          cell_size_.width, cells_per_block_.width,
-                                          labels.ptr<float>());
-
             Mat labels_host;
             labels.download(labels_host);
             float* vec = labels_host.ptr<float>();
@@ -771,6 +790,11 @@ namespace
         struct params_compute_hists *in_buf = (struct params_compute_hists *)pgm_get_edge_buf_c(*in_edge);
         if (in_buf == NULL)
             fprintf(stderr, "compute gradients in buffer is NULL\n");
+        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_out(node, out_edge, 1));
+        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+        if (out_buf == NULL)
+            fprintf(stderr, "compute gradients out buffer is NULL\n");
 
         pthread_barrier_wait(&init_barrier);
 
@@ -791,6 +815,11 @@ namespace
                             in_buf->hog_agent->cell_size_.width, in_buf->hog_agent->cell_size_.height,
                             in_buf->hog_agent->cells_per_block_.width, in_buf->hog_agent->cells_per_block_.height,
                             in_buf->stream);
+
+                    CheckError(pgm_swap_edge_bufs(in_buf, out_buf));
+                    struct params_compute_hists *temp = in_buf;
+                    in_buf = out_buf;
+                    out_buf = temp;
 
                     CheckError(pgm_complete(node));
                 }
@@ -862,11 +891,13 @@ namespace
                             in_buf->hog_agent->cells_per_block_.width, in_buf->hog_agent->cells_per_block_.height,
                             in_buf->stream);
 
-                    switch (in_buf->img->type())
+                    //switch (in_buf->img->type())
+                    switch (in_buf->img.type())
                     {
                         case CV_8UC1:
                             hog::compute_gradients_8UC1(in_buf->hog_agent->nbins_,
-                                    in_buf->height, in_buf->width, *(in_buf->img),
+                                    //in_buf->height, in_buf->width, *(in_buf->img),
+                                    in_buf->height, in_buf->width, in_buf->img,
                                     angleScale,
                                     in_buf->grad, in_buf->qangle,
                                     in_buf->hog_agent->gamma_correction_,
@@ -874,7 +905,8 @@ namespace
                             break;
                         case CV_8UC4:
                             hog::compute_gradients_8UC4(in_buf->hog_agent->nbins_,
-                                    in_buf->height, in_buf->width, *(in_buf->img),
+                                    //in_buf->height, in_buf->width, *(in_buf->img),
+                                    in_buf->height, in_buf->width, in_buf->img,
                                     angleScale,
                                     in_buf->grad, in_buf->qangle,
                                     in_buf->hog_agent->gamma_correction_,
@@ -886,6 +918,96 @@ namespace
                     struct params_compute_hists *temp = in_buf;
                     in_buf = out_buf;
                     out_buf = temp;
+                    CheckError(pgm_complete(node));
+                }
+                else
+                {
+                    fprintf(stdout, "%s- %d terminates\n", tabbuf, node.node);
+                }
+
+            } while(ret != PGM_TERMINATE);
+        }
+
+        pthread_barrier_wait(&init_barrier);
+
+        CheckError(pgm_release_node(node));
+
+        free(in_edge);
+        pthread_exit(0);
+    }
+
+    void* thread_classify_hists(void* _node)
+    {
+        char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
+        node_t& node = *((node_t*)_node);
+        int ret = 0;
+
+        tabbuf[node.node] = '\0';
+
+        CheckError(pgm_claim_node(node));
+
+        edge_t *in_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_in(node, in_edge, 1));
+        struct params_compute_hists *in_buf = (struct params_compute_hists *)pgm_get_edge_buf_c(*in_edge);
+        if (in_buf == NULL)
+            fprintf(stderr, "compute gradients in buffer is NULL\n");
+        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_out(node, out_edge, 1));
+        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+        if (out_buf == NULL)
+            fprintf(stderr, "compute gradients out buffer is NULL\n");
+
+        pthread_barrier_wait(&init_barrier);
+
+        if(!errors)
+        {
+            do {
+                ret = pgm_wait(node);
+
+                if(ret != PGM_TERMINATE)
+                {
+                    CheckError(ret);
+                    fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+                    //hog::normalize_hists(in_buf->hog_agent->nbins_,
+                    //        in_buf->hog_agent->block_stride_.width, in_buf->hog_agent->block_stride_.height,
+                    //        in_buf->height, in_buf->width,
+                    //        in_buf->block_hists,
+                    //        (float) in_buf->hog_agent->threshold_L2hys_,
+                    //        in_buf->hog_agent->cell_size_.width, in_buf->hog_agent->cell_size_.height,
+                    //        in_buf->hog_agent->cells_per_block_.width, in_buf->hog_agent->cells_per_block_.height,
+                    //        in_buf->stream);
+                    if (in_buf->confidences == NULL)
+                    {
+                        hog::classify_hists(in_buf->hog_agent->win_size_.height, in_buf->hog_agent->win_size_.width,
+                                in_buf->hog_agent->block_stride_.height, in_buf->hog_agent->block_stride_.width,
+                                in_buf->hog_agent->win_stride_.height, in_buf->hog_agent->win_stride_.width,
+                                in_buf->img.rows, in_buf->img.cols,
+                                in_buf->block_hists,
+                                in_buf->hog_agent->detector_.ptr<float>(),
+                                (float)in_buf->hog_agent->free_coef_,
+                                (float)in_buf->hog_agent->hit_threshold_,
+                                in_buf->hog_agent->cell_size_.width, in_buf->hog_agent->cells_per_block_.width,
+                                in_buf->labels.ptr());
+                    }
+                    else
+                    {
+                        hog::compute_confidence_hists(in_buf->hog_agent->win_size_.height, in_buf->hog_agent->win_size_.width,
+                                in_buf->hog_agent->block_stride_.height, in_buf->hog_agent->block_stride_.width,
+                                in_buf->hog_agent->win_stride_.height, in_buf->hog_agent->win_stride_.width,
+                                in_buf->img.rows, in_buf->img.cols,
+                                in_buf->block_hists,
+                                in_buf->hog_agent->detector_.ptr<float>(),
+                                (float)in_buf->hog_agent->free_coef_,
+                                (float)in_buf->hog_agent->hit_threshold_,
+                                in_buf->hog_agent->cell_size_.width, in_buf->hog_agent->cells_per_block_.width,
+                                in_buf->labels.ptr<float>());
+                    }
+
+                    CheckError(pgm_swap_edge_bufs(in_buf, out_buf));
+                    struct params_compute_hists *temp = in_buf;
+                    in_buf = out_buf;
+                    out_buf = temp;
+
                     CheckError(pgm_complete(node));
                 }
                 else
@@ -924,36 +1046,12 @@ namespace
         out_buf->block_hists = block_hists.ptr<float>();
         out_buf->stream = StreamAccessor::getStream(stream);
         out_buf->hog_agent = this;
-        out_buf->img = &img;
+        //out_buf->img = &img;
+        out_buf->img = img;
 
         CheckError(pgm_complete(n0));
 
-//        hog::set_up_constants(nbins_,
-//                              block_stride_.width, block_stride_.height,
-//                              blocks_per_win.width, blocks_per_win.height,
-//                              cells_per_block_.width, cells_per_block_.height,
-//                              StreamAccessor::getStream(stream));
-//
-//        switch (img.type())
-//        {
-//            case CV_8UC1:
-//                hog::compute_gradients_8UC1(nbins_,
-//                                            img.rows, img.cols, img,
-//                                            angleScale,
-//                                            grad, qangle,
-//                                            gamma_correction_,
-//                                            StreamAccessor::getStream(stream));
-//                break;
-//            case CV_8UC4:
-//                hog::compute_gradients_8UC4(nbins_,
-//                                            img.rows, img.cols, img,
-//                                            angleScale,
-//                                            grad, qangle,
-//                                            gamma_correction_,
-//                                            StreamAccessor::getStream(stream));
-//                break;
-//        }
-
+        // computing gradients
 
         // computing hists
 
