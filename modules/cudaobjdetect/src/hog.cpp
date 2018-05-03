@@ -617,11 +617,11 @@ namespace
             else
             {
                 smaller_img = pool.getBuffer(sz, img.type());
-                switch (img.type())
-                {
-                    case CV_8UC1: hog::resize_8UC1(img, smaller_img); break;
-                    case CV_8UC4: hog::resize_8UC4(img, smaller_img); break;
-                }
+                //switch (img.type())
+                //{
+                //    case CV_8UC1: hog::resize_8UC1(img, smaller_img); break;
+                //    case CV_8UC4: hog::resize_8UC4(img, smaller_img); break;
+                //}
             }
 
             CV_Assert( smaller_img.type() == CV_8UC1 || smaller_img.type() == CV_8UC4 );
@@ -659,6 +659,8 @@ namespace
             out_buf->stream = StreamAccessor::getStream(Stream::Null());
             out_buf->hog_agent = this;
             out_buf->img = smaller_img;
+            out_buf->scale = scale;
+            out_buf->smaller_img = img;
             out_buf->confidences = confidences ? &level_confidences : NULL;
             out_buf->labels = labels;
 
@@ -1109,17 +1111,17 @@ namespace
                     CheckError(ret);
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
 
-                    //Size sz(cvRound(in_buf->img.cols / in_buf->scale), cvRound(in_buf->img.rows / in_buf->scale));
+                    Size sz(cvRound(in_buf->img.cols / in_buf->scale), cvRound(in_buf->img.rows / in_buf->scale));
 
-                    //if (sz != in_buf->img.size())
-                    //{
-                    //    switch (in_buf->img.type())
-                    //    {
-                    //        case CV_8UC1: hog::resize_8UC1(in_buf->img, in_buf->smaller_img); break;
-                    //        case CV_8UC4: hog::resize_8UC4(in_buf->img, in_buf->smaller_img); break;
-                    //    }
-                    //    in_buf->img = in_buf->smaller_img;
-                    //}
+                    if (sz != in_buf->img.size())
+                    {
+                        switch (in_buf->img.type())
+                        {
+                            case CV_8UC1: hog::resize_8UC1(in_buf->smaller_img, in_buf->img); break;
+                            case CV_8UC4: hog::resize_8UC4(in_buf->smaller_img, in_buf->img); break;
+                        }
+                    }
+                    //in_buf->img = in_buf->smaller_img;
 
                     CheckError(pgm_swap_edge_bufs(in_buf, out_buf));
                     struct params_compute_hists *temp = in_buf;
