@@ -310,7 +310,7 @@ namespace
         win_sigma_(-1.0),
         threshold_L2hys_(0.2),
         gamma_correction_(true),
-        nlevels_(64),
+        nlevels_(13),//64),
         hit_threshold_(0.0),
         win_stride_(block_stride),
         scale0_(1.05),
@@ -349,9 +349,11 @@ namespace
         fifo_attr.type = pgm_fifo_edge;
         mq_attr.type = pgm_mq_edge;
 
+        fifo_attr.nr_threshold = nlevels_ * sizeof(struct params_compute_hists);
+        fifo_attr.nr_consume = nlevels_ * sizeof(struct params_compute_hists);
 
-        fast_mq_attr.mq_maxmsg = 10; /* root required for higher values */
-        mq_attr.mq_maxmsg = 10;
+        fast_mq_attr.mq_maxmsg = nlevels_; /* root required for higher values */
+        mq_attr.mq_maxmsg = nlevels_;
 
         CheckError(pgm_init("/tmp/graphs", 1));
         CheckError(pgm_init_graph(&g, "demo"));
@@ -364,12 +366,12 @@ namespace
         CheckError(pgm_init_node(&n5, g, "n5"));
         CheckError(pgm_init_node(&n6, g, "n6"));
 
-        CheckError(pgm_init_edge(&e0_1, n0, n1, "e0_1", &fifo_attr));
-        CheckError(pgm_init_edge(&e1_2, n1, n2, "e1_2", &fifo_attr));
+        CheckError(pgm_init_edge(&e0_1, n0, n1, "e0_1", &fast_mq_attr));
+        CheckError(pgm_init_edge(&e1_2, n1, n2, "e1_2", &fast_mq_attr));
         CheckError(pgm_init_edge(&e2_3, n2, n3, "e2_3", &fast_mq_attr));
-        CheckError(pgm_init_edge(&e3_4, n3, n4, "e3_4", &mq_attr));
-        CheckError(pgm_init_edge(&e4_5, n4, n5, "e4_5", &fast_fifo_attr));
-        CheckError(pgm_init_edge(&e5_6, n5, n6, "e5_5", &fast_fifo_attr));
+        CheckError(pgm_init_edge(&e3_4, n3, n4, "e3_4", &fast_mq_attr));
+        CheckError(pgm_init_edge(&e4_5, n4, n5, "e4_5", &fast_mq_attr));
+        CheckError(pgm_init_edge(&e5_6, n5, n6, "e5_6", &fifo_attr));
  
         pthread_barrier_init(&init_barrier, 0, 6);
         //pthread_create(&t0, 0, thread, &n0);
@@ -603,6 +605,18 @@ namespace
         BufferPool pool(Stream::Null());
 
         found_locations.clear();
+        GpuMat *labels_array = new GpuMat[level_scale.size()];
+        GpuMat *smaller_img_arr = new GpuMat[level_scale.size()];
+        GpuMat *block_hists_arr = new GpuMat[level_scale.size()];
+        GpuMat *grad_arr = new GpuMat[level_scale.size()];
+        GpuMat *qangle_arr = new GpuMat[level_scale.size()];
+
+        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_out(n0, out_edge, 1));
+        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+        if (out_buf == NULL)
+            fprintf(stdout, "compute gradients out buffer is NULL\n");
+
         for (size_t i = 0; i < level_scale.size(); i++)
         {
             scale = level_scale[i];
@@ -612,45 +626,34 @@ namespace
             GpuMat smaller_img;
             if (sz == img.size())
             {
-                smaller_img = img;
+                smaller_img = smaller_img_arr[i] = img;
             }
             else
             {
-                smaller_img = pool.getBuffer(sz, img.type());
-                //switch (img.type())
-                //{
-                //    case CV_8UC1: hog::resize_8UC1(img, smaller_img); break;
-                //    case CV_8UC4: hog::resize_8UC4(img, smaller_img); break;
-                //}
+                smaller_img = smaller_img_arr[i] = pool.getBuffer(sz, img.type());
             }
 
             CV_Assert( smaller_img.type() == CV_8UC1 || smaller_img.type() == CV_8UC4 );
             CV_Assert( win_stride_.width % block_stride_.width == 0 && win_stride_.height % block_stride_.height == 0 );
 
-            level_hits.clear();
             if (detector_.empty())
                 return;
 
-            Size wins_per_img = numPartsWithin(smaller_img.size(), win_size_, win_stride_);
-            GpuMat labels;
+            Size wins_per_img = numPartsWithin(sz, win_size_, win_stride_);
             if (confidences == NULL)
             {
-                labels = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
+                labels_array[i] = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
             }
             else
             {
-                labels = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
+                labels_array[i] = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
             }
+            GpuMat labels = labels_array[i];
 
-            GpuMat block_hists = pool.getBuffer(1, getTotalHistSize(smaller_img.size()), CV_32FC1);
-            GpuMat grad       = pool.getBuffer(smaller_img.size(), CV_32FC2);
-            GpuMat qangle     = pool.getBuffer(smaller_img.size(), CV_8UC2);
+            GpuMat block_hists = block_hists_arr[i] = pool.getBuffer(1, getTotalHistSize(smaller_img.size()), CV_32FC1);
+            GpuMat grad       = grad_arr[i] = pool.getBuffer(smaller_img.size(), CV_32FC2);
+            GpuMat qangle     = qangle_arr[i] = pool.getBuffer(smaller_img.size(), CV_8UC2);
 
-            edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
-            CheckError(pgm_get_edges_out(n0, out_edge, 1));
-            struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
-            if (out_buf == NULL)
-                fprintf(stdout, "compute gradients out buffer is NULL\n");
             out_buf->height = smaller_img.rows;
             out_buf->width = smaller_img.cols;
             out_buf->grad = grad;
@@ -666,6 +669,8 @@ namespace
 
             CheckError(pgm_complete(n0));
 
+            // resize image
+
             // computing gradients
 
             // computing hists
@@ -673,10 +678,23 @@ namespace
             // normalizing hists
 
             // classify hists
+        }
+        pgm_wait(n6);
+        free(out_edge);
 
-            pgm_wait(n6);
-            free(out_edge);
+        for (size_t i = 0; i < level_scale.size(); i++)
+        {
+            block_hists_arr[i].release();
+            grad_arr[i].release();
+            qangle_arr[i].release();
+            smaller_img_arr[i].release();
 
+            scale = level_scale[i];
+
+            Size sz(cvRound(img.cols / scale), cvRound(img.rows / scale));
+            Size wins_per_img = numPartsWithin(sz, win_size_, win_stride_);
+            GpuMat labels = labels_array[i];
+            level_hits.clear();
             if (confidences == NULL)
             {
                 Mat labels_host;
@@ -688,7 +706,9 @@ namespace
                     int y = i / wins_per_img.width;
                     int x = i - wins_per_img.width * y;
                     if (vec[i])
+                    {
                         level_hits.push_back(Point(x * win_stride_.width, y * win_stride_.height));
+                    }
                 }
             }
             else
@@ -720,6 +740,7 @@ namespace
                 if (confidences)
                     confidences->push_back(level_confidences[j]);
             }
+            labels_array[i].release();
         }
 
         if (group_threshold_ > 0)
@@ -1121,7 +1142,6 @@ namespace
                             case CV_8UC4: hog::resize_8UC4(in_buf->smaller_img, in_buf->img); break;
                         }
                     }
-                    //in_buf->img = in_buf->smaller_img;
 
                     CheckError(pgm_swap_edge_bufs(in_buf, out_buf));
                     struct params_compute_hists *temp = in_buf;
