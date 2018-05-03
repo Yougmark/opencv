@@ -637,8 +637,93 @@ namespace
                 }
             }
 
-            detect(smaller_img, level_hits,
-                   confidences ? &level_confidences : NULL);
+            //detect(smaller_img, level_hits,
+                   //confidences ? &level_confidences : NULL);
+            CV_Assert( smaller_img.type() == CV_8UC1 || smaller_img.type() == CV_8UC4 );
+            CV_Assert( win_stride_.width % block_stride_.width == 0 && win_stride_.height % block_stride_.height == 0 );
+
+            level_hits.clear();
+            if (detector_.empty())
+                return;
+
+            Size wins_per_img = numPartsWithin(smaller_img.size(), win_size_, win_stride_);
+            GpuMat labels;
+            if (confidences == NULL)
+            {
+                labels = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
+            }
+            else
+            {
+                labels = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
+            }
+
+            GpuMat block_hists = pool.getBuffer(1, getTotalHistSize(smaller_img.size()), CV_32FC1);
+            GpuMat grad       = pool.getBuffer(smaller_img.size(), CV_32FC2);
+            GpuMat qangle     = pool.getBuffer(smaller_img.size(), CV_8UC2);
+
+            edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+            CheckError(pgm_get_edges_out(n0, out_edge, 1));
+            struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+            if (out_buf == NULL)
+                fprintf(stdout, "compute gradients out buffer is NULL\n");
+            out_buf->height = smaller_img.rows;
+            out_buf->width = smaller_img.cols;
+            out_buf->grad = grad;
+            out_buf->qangle = qangle;
+            out_buf->block_hists = block_hists.ptr<float>();
+            out_buf->stream = StreamAccessor::getStream(Stream::Null());
+            out_buf->hog_agent = this;
+            //out_buf->img = &smaller_img;
+            out_buf->img = smaller_img;
+            out_buf->confidences = confidences ? &level_confidences : NULL;
+            out_buf->labels = labels;
+
+            CheckError(pgm_complete(n0));
+
+            // computing gradients
+
+            // computing hists
+
+            // normalizing hists
+
+            // classify hists
+
+            pgm_wait(n5);
+            free(out_edge);
+
+            if (confidences == NULL)
+            {
+                Mat labels_host;
+                labels.download(labels_host);
+                unsigned char* vec = labels_host.ptr();
+
+                for (int i = 0; i < wins_per_img.area(); i++)
+                {
+                    int y = i / wins_per_img.width;
+                    int x = i - wins_per_img.width * y;
+                    if (vec[i])
+                        level_hits.push_back(Point(x * win_stride_.width, y * win_stride_.height));
+                }
+            }
+            else
+            {
+                Mat labels_host;
+                labels.download(labels_host);
+                float* vec = labels_host.ptr<float>();
+
+                level_confidences.clear();
+                for (int i = 0; i < wins_per_img.area(); i++)
+                {
+                    int y = i / wins_per_img.width;
+                    int x = i - wins_per_img.width * y;
+
+                    if (vec[i] >= hit_threshold_)
+                    {
+                        level_hits.push_back(Point(x * win_stride_.width, y * win_stride_.height));
+                        level_confidences.push_back((double)vec[i]);
+                    }
+                }
+            }
 
             Size scaled_win_size(cvRound(win_size_.width * scale),
                                  cvRound(win_size_.height * scale));
