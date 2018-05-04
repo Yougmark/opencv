@@ -263,8 +263,8 @@ namespace
         // for PGM^RT
         //void* thread_compute_hists(void* _node);
         graph_t g;
-        node_t  n0, n1, n2, n3, n4, n5, n6;
-        edge_t  e0_1, e1_2, e2_3, e3_4, e4_5, e5_6;
+        node_t  n0, n1, n2, n3, n4, n5, n6, n7;
+        edge_t  e0_1, e1_2, e2_3, e3_4, e4_5, e5_6, e6_7;
 
         pthread_t t0, t1, t2, t3, t4, t5, t6;
 
@@ -287,8 +287,16 @@ namespace
         GpuMat img;
         GpuMat labels;
         std::vector<double>* confidences;
+        std::vector<double>* all_confidences;
         double scale;
         GpuMat smaller_img;
+        GpuMat* labels_array;
+        GpuMat* smaller_img_arr;
+        GpuMat* block_hists_arr;
+        GpuMat* grad_arr;
+        GpuMat* qangle_arr;
+        std::vector<double> level_scale;
+        std::vector<Rect>* found_locations;
     };
 
     void* thread_compute_gradients(void* _node);
@@ -296,6 +304,7 @@ namespace
     void* thread_normalize_hists(void* _node);
     void* thread_classify_hists(void* _node);
     void* thread_resize(void* _node);
+    void* thread_collect_loc(void* _node);
     HOG_Impl::HOG_Impl(Size win_size,
                        Size block_size,
                        Size block_stride,
@@ -365,6 +374,7 @@ namespace
         CheckError(pgm_init_node(&n4, g, "n4"));
         CheckError(pgm_init_node(&n5, g, "n5"));
         CheckError(pgm_init_node(&n6, g, "n6"));
+        CheckError(pgm_init_node(&n7, g, "n7"));
 
         CheckError(pgm_init_edge(&e0_1, n0, n1, "e0_1", &fast_mq_attr));
         CheckError(pgm_init_edge(&e1_2, n1, n2, "e1_2", &fast_mq_attr));
@@ -372,8 +382,9 @@ namespace
         CheckError(pgm_init_edge(&e3_4, n3, n4, "e3_4", &fast_mq_attr));
         CheckError(pgm_init_edge(&e4_5, n4, n5, "e4_5", &fast_mq_attr));
         CheckError(pgm_init_edge(&e5_6, n5, n6, "e5_6", &fifo_attr));
- 
-        pthread_barrier_init(&init_barrier, 0, 6);
+        CheckError(pgm_init_edge(&e6_7, n6, n7, "e6_7", &fast_mq_attr));
+
+        pthread_barrier_init(&init_barrier, 0, 7);
         //pthread_create(&t0, 0, thread, &n0);
         printf("right before creating t1 thread...\n");
         pthread_create(&t1, 0, thread_resize, &n1);
@@ -381,8 +392,9 @@ namespace
         pthread_create(&t3, 0, thread_compute_hists, &n3);
         pthread_create(&t4, 0, thread_normalize_hists, &n4);
         pthread_create(&t5, 0, thread_classify_hists, &n5);
+        pthread_create(&t6, 0, thread_collect_loc, &n6);
         CheckError(pgm_claim_node(n0));
-        CheckError(pgm_claim_node(n6));
+        CheckError(pgm_claim_node(n7));
 
         printf("right before barrier in main thread...\n");
         pthread_barrier_wait(&init_barrier);
@@ -395,7 +407,7 @@ namespace
         CheckError(pgm_terminate(n0));
         pthread_barrier_wait(&init_barrier);
         CheckError(pgm_release_node(n0));
-        CheckError(pgm_release_node(n6));
+        CheckError(pgm_release_node(n7));
         printf("Joining pthreads...\n");
         //pthread_join(t0, 0);
         pthread_join(t1, 0);
@@ -403,7 +415,7 @@ namespace
         pthread_join(t3, 0);
         pthread_join(t4, 0);
         pthread_join(t5, 0);
-        //pthread_join(t6, 0);
+        pthread_join(t6, 0);
 
         CheckError(pgm_destroy_graph(g));
         CheckError(pgm_destroy());
@@ -665,7 +677,15 @@ namespace
             out_buf->scale = scale;
             out_buf->smaller_img = img;
             out_buf->confidences = confidences ? &level_confidences : NULL;
+            out_buf->all_confidences = confidences;
             out_buf->labels = labels;
+            out_buf->labels_array = labels_array;
+            out_buf->smaller_img_arr = smaller_img_arr;
+            out_buf->block_hists_arr = block_hists_arr;
+            out_buf->grad_arr = grad_arr;
+            out_buf->qangle_arr = qangle_arr;
+            out_buf->level_scale = level_scale;
+            out_buf->found_locations = &found_locations;
 
             CheckError(pgm_complete(n0));
 
@@ -679,74 +699,9 @@ namespace
 
             // classify hists
         }
-        pgm_wait(n6);
+        // collect locations
+        pgm_wait(n7);
         free(out_edge);
-
-        for (size_t i = 0; i < level_scale.size(); i++)
-        {
-            block_hists_arr[i].release();
-            grad_arr[i].release();
-            qangle_arr[i].release();
-            smaller_img_arr[i].release();
-
-            scale = level_scale[i];
-
-            Size sz(cvRound(img.cols / scale), cvRound(img.rows / scale));
-            Size wins_per_img = numPartsWithin(sz, win_size_, win_stride_);
-            GpuMat labels = labels_array[i];
-            level_hits.clear();
-            if (confidences == NULL)
-            {
-                Mat labels_host;
-                labels.download(labels_host);
-                unsigned char* vec = labels_host.ptr();
-
-                for (int i = 0; i < wins_per_img.area(); i++)
-                {
-                    int y = i / wins_per_img.width;
-                    int x = i - wins_per_img.width * y;
-                    if (vec[i])
-                    {
-                        level_hits.push_back(Point(x * win_stride_.width, y * win_stride_.height));
-                    }
-                }
-            }
-            else
-            {
-                Mat labels_host;
-                labels.download(labels_host);
-                float* vec = labels_host.ptr<float>();
-
-                level_confidences.clear();
-                for (int i = 0; i < wins_per_img.area(); i++)
-                {
-                    int y = i / wins_per_img.width;
-                    int x = i - wins_per_img.width * y;
-
-                    if (vec[i] >= hit_threshold_)
-                    {
-                        level_hits.push_back(Point(x * win_stride_.width, y * win_stride_.height));
-                        level_confidences.push_back((double)vec[i]);
-                    }
-                }
-            }
-
-            Size scaled_win_size(cvRound(win_size_.width * scale),
-                                 cvRound(win_size_.height * scale));
-
-            for (size_t j = 0; j < level_hits.size(); j++)
-            {
-                found_locations.push_back(Rect(Point2d(level_hits[j]) * scale, scaled_win_size));
-                if (confidences)
-                    confidences->push_back(level_confidences[j]);
-            }
-            labels_array[i].release();
-        }
-
-        if (group_threshold_ > 0)
-        {
-            groupRectangles(found_locations, group_threshold_, 0.2/*magic number copied from CPU version*/);
-        }
     }
 
     void HOG_Impl::compute(InputArray _img,
@@ -930,7 +885,7 @@ namespace
         free(in_edge);
         pthread_exit(0);
     }
-    
+
     void* thread_compute_gradients(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
@@ -1147,6 +1102,139 @@ namespace
                     struct params_compute_hists *temp = in_buf;
                     in_buf = out_buf;
                     out_buf = temp;
+
+                    CheckError(pgm_complete(node));
+                }
+                else
+                {
+                    fprintf(stdout, "%s- %d terminates\n", tabbuf, node.node);
+                }
+
+            } while(ret != PGM_TERMINATE);
+        }
+
+        pthread_barrier_wait(&init_barrier);
+
+        CheckError(pgm_release_node(node));
+
+        free(in_edge);
+        pthread_exit(0);
+    }
+
+    void* thread_collect_loc(void* _node)
+    {
+        char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
+        node_t& node = *((node_t*)_node);
+        int ret = 0;
+
+        tabbuf[node.node] = '\0';
+
+        CheckError(pgm_claim_node(node));
+
+        edge_t *in_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_in(node, in_edge, 1));
+        struct params_compute_hists *in_buf = (struct params_compute_hists *)pgm_get_edge_buf_c(*in_edge);
+        if (in_buf == NULL)
+            fprintf(stderr, "compute gradients in buffer is NULL\n");
+        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_out(node, out_edge, 1));
+        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+        if (out_buf == NULL)
+            fprintf(stderr, "compute gradients out buffer is NULL\n");
+
+        pthread_barrier_wait(&init_barrier);
+
+        if(!errors)
+        {
+            do {
+                ret = pgm_wait(node);
+
+                if(ret != PGM_TERMINATE)
+                {
+                    CheckError(ret);
+                    fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+
+                    std::vector<Point> level_hits;
+                    std::vector<double> level_confidences;
+                    double scale;
+
+                    for (size_t i = 0; i < in_buf->level_scale.size(); i++)
+                    {
+                        scale = in_buf->level_scale[i];
+
+                        //Size sz(cvRound(img.cols / scale), cvRound(img.rows / scale));
+                        Size sz = in_buf->smaller_img_arr[i].size();
+                        Size wins_per_img = numPartsWithin(sz,
+                                in_buf->hog_agent->win_size_,
+                                in_buf->hog_agent->win_stride_);
+                        GpuMat labels = in_buf->labels_array[i];
+                        level_hits.clear();
+                        if (in_buf->all_confidences == NULL)
+                        {
+                            Mat labels_host;
+                            labels.download(labels_host);
+                            unsigned char* vec = labels_host.ptr();
+
+                            for (int i = 0; i < wins_per_img.area(); i++)
+                            {
+                                int y = i / wins_per_img.width;
+                                int x = i - wins_per_img.width * y;
+                                if (vec[i])
+                                {
+                                    level_hits.push_back(Point(x *
+                                                in_buf->hog_agent->win_stride_.width,
+                                                y *
+                                                in_buf->hog_agent->win_stride_.height));
+                                }
+                            }
+                        }
+                        else
+                        {
+                            Mat labels_host;
+                            labels.download(labels_host);
+                            float* vec = labels_host.ptr<float>();
+
+                            level_confidences.clear();
+                            for (int i = 0; i < wins_per_img.area(); i++)
+                            {
+                                int y = i / wins_per_img.width;
+                                int x = i - wins_per_img.width * y;
+
+                                if (vec[i] >= in_buf->hog_agent->hit_threshold_)
+                                {
+                                    level_hits.push_back(Point(x *
+                                                in_buf->hog_agent->win_stride_.width,
+                                                y *
+                                                in_buf->hog_agent->win_stride_.height));
+                                    level_confidences.push_back((double)vec[i]);
+                                }
+                            }
+                        }
+
+                        Size scaled_win_size(cvRound(in_buf->hog_agent->win_size_.width * scale),
+                                cvRound(in_buf->hog_agent->win_size_.height * scale));
+
+                        for (size_t j = 0; j < level_hits.size(); j++)
+                        {
+                            in_buf->found_locations->push_back(Rect(Point2d(level_hits[j]) * scale, scaled_win_size));
+                            if (in_buf->all_confidences)
+                                in_buf->all_confidences->push_back(level_confidences[j]);
+                        }
+                        in_buf->labels_array[i].release();
+                        in_buf->block_hists_arr[i].release();
+                        in_buf->grad_arr[i].release();
+                        in_buf->qangle_arr[i].release();
+                        in_buf->smaller_img_arr[i].release();
+                    }
+                    if (in_buf->hog_agent->group_threshold_ > 0)
+                    {
+                        groupRectangles(*in_buf->found_locations, in_buf->hog_agent->group_threshold_, 0.2/*magic number copied from CPU version*/);
+                    }
+
+                    //CheckError(pgm_swap_edge_bufs(in_buf, out_buf));
+                    //struct params_compute_hists *temp = in_buf;
+                    //in_buf = out_buf;
+                    //out_buf = temp;
 
                     CheckError(pgm_complete(node));
                 }
