@@ -43,6 +43,8 @@
 #include "precomp.hpp"
 
 // for PGM^RT
+#include <opencv2/core/utility.hpp>
+#include "opencv2/highgui.hpp"
 #include <iostream>
 #include <unistd.h>
 #include <errno.h>
@@ -61,10 +63,10 @@ Ptr<cuda::HOG> cv::cuda::HOG::create(Size, Size, Size, Size, int) { throw_no_cud
 #else
 
 int errors = 0;
-pthread_barrier_t init_barrier;
 
 __thread char __errstr[80] = {0};
 
+#define DEBUG 0
 #define CheckError(e) \
 do { int __ret = (e); \
 if(__ret < 0) { \
@@ -168,7 +170,6 @@ namespace
                  Size block_stride,
                  Size cell_size,
                  int nbins);
-        ~HOG_Impl();
 
         virtual void setWinSigma(double win_sigma) { win_sigma_ = win_sigma; }
         virtual double getWinSigma() const;
@@ -217,6 +218,20 @@ namespace
                              OutputArray descriptors,
                              Stream& stream);
 
+        virtual void* thread_compute_gradients(void* node);
+
+        virtual void* thread_compute_hists(void* node);
+
+        virtual void* thread_normalize_hists(void* node);
+
+        virtual void* thread_classify_hists(void* node);
+
+        virtual void* thread_resize(void* node);
+
+        virtual void* thread_collect_loc(void* node);
+
+        virtual void* thread_detect_multiscale(void* _node);
+    private:
         Size win_size_;
         Size block_size_;
         Size block_stride_;
@@ -233,78 +248,44 @@ namespace
         int group_threshold_;
         int descr_format_;
         Size cells_per_block_;
-        // Coefficients of the separating plane
         float free_coef_;
         GpuMat detector_;
-    private:
-        //Size win_size_;
-        //Size block_size_;
-        //Size block_stride_;
-        //Size cell_size_;
-        //int nbins_;
-
-        //double win_sigma_;
-        //double threshold_L2hys_;
-        //bool gamma_correction_;
-        //int nlevels_;
-        //double hit_threshold_;
-        //Size win_stride_;
-        //double scale0_;
-        //int group_threshold_;
-        //int descr_format_;
-        //Size cells_per_block_;
 
     private:
         int getTotalHistSize(Size img_size) const;
         void computeBlockHistograms(const GpuMat& img, GpuMat& block_hists, Stream& stream);
-//        void computeGradient(const GpuMat& img, GpuMat& grad, GpuMat& qangle, Stream& stream);
-
-
-        // for PGM^RT
-        //void* thread_compute_hists(void* _node);
-        graph_t g;
-        node_t  n0, n1, n2, n3, n4, n5, n6, n7;
-        edge_t  e0_1, e1_2, e2_3, e3_4, e4_5, e5_6, e6_7;
-
-        pthread_t t0, t1, t2, t3, t4, t5, t6;
-
-        edge_attr_t cv_attr;
-        edge_attr_t fast_fifo_attr, fast_mq_attr;
-        edge_attr_t fifo_attr, mq_attr;
-        // end (for PGM^RT)
     };
 
     struct params_compute_hists
     {
         int height;
         int width;
-        PtrStepSzf grad;
-        PtrStepSzb qangle;
+        cv::cuda::PtrStepSzf grad;
+        cv::cuda::PtrStepSzb qangle;
         float* block_hists;
         cudaStream_t stream;
         HOG_Impl* hog_agent;
-        //const GpuMat *img;
-        GpuMat img;
-        GpuMat labels;
+        cv::cuda::GpuMat img;
+        cv::cuda::GpuMat labels;
         std::vector<double>* confidences;
         std::vector<double>* all_confidences;
         double scale;
-        GpuMat smaller_img;
-        GpuMat* labels_array;
-        GpuMat* smaller_img_arr;
-        GpuMat* block_hists_arr;
-        GpuMat* grad_arr;
-        GpuMat* qangle_arr;
+        cv::cuda::GpuMat smaller_img;
+        cv::cuda::GpuMat* labels_array;
+        cv::cuda::GpuMat* smaller_img_arr;
+        cv::cuda::GpuMat* block_hists_arr;
+        cv::cuda::GpuMat* grad_arr;
+        cv::cuda::GpuMat* qangle_arr;
         std::vector<double> level_scale;
         std::vector<Rect>* found_locations;
+        /* display */
+        VideoCapture vc;
+        Mat* img_to_show;
+        cv::VideoWriter video_writer;
+        std::vector<String> filenames;
+        Mat* frame;
     };
 
-    void* thread_compute_gradients(void* _node);
-    void* thread_compute_hists(void* _node);
-    void* thread_normalize_hists(void* _node);
-    void* thread_classify_hists(void* _node);
-    void* thread_resize(void* _node);
-    void* thread_collect_loc(void* _node);
     HOG_Impl::HOG_Impl(Size win_size,
                        Size block_size,
                        Size block_stride,
@@ -319,7 +300,7 @@ namespace
         win_sigma_(-1.0),
         threshold_L2hys_(0.2),
         gamma_correction_(true),
-        nlevels_(13),//64),
+        nlevels_(64),
         hit_threshold_(0.0),
         win_stride_(block_stride),
         scale0_(1.05),
@@ -338,87 +319,7 @@ namespace
         // Pattern Recognition, volume 2, pages 886-893, June 2005
         // http://lear.inrialpes.fr/people/triggs/pubs/Dalal-cvpr05.pdf (28.07.2015) [Figure 5]
         CV_Assert(block_stride == (block_size / 2));
-
         CV_Assert(cell_size.width == cell_size.height);
-
-        // for PGM^RT
-
-        memset(&cv_attr, 0, sizeof(cv_attr));
-
-        printf("sizeof struct params_compute_hists: %d\n", sizeof(struct params_compute_hists));
-        cv_attr.nr_produce = sizeof(struct params_compute_hists);
-        cv_attr.nr_consume = sizeof(struct params_compute_hists);
-        cv_attr.nr_threshold = sizeof(struct params_compute_hists);
-
-        fast_fifo_attr = fast_mq_attr = fifo_attr = mq_attr = cv_attr;
-
-        cv_attr.type = pgm_cv_edge;
-        fast_fifo_attr.type = pgm_fast_fifo_edge;
-        fast_mq_attr.type = pgm_fast_mq_edge;
-        fifo_attr.type = pgm_fifo_edge;
-        mq_attr.type = pgm_mq_edge;
-
-        fifo_attr.nr_threshold = nlevels_ * sizeof(struct params_compute_hists);
-        fifo_attr.nr_consume = nlevels_ * sizeof(struct params_compute_hists);
-
-        fast_mq_attr.mq_maxmsg = nlevels_; /* root required for higher values */
-        mq_attr.mq_maxmsg = nlevels_;
-
-        CheckError(pgm_init("/tmp/graphs", 1));
-        CheckError(pgm_init_graph(&g, "demo"));
-
-        CheckError(pgm_init_node(&n0, g, "n0"));
-        CheckError(pgm_init_node(&n1, g, "n1"));
-        CheckError(pgm_init_node(&n2, g, "n2"));
-        CheckError(pgm_init_node(&n3, g, "n3"));
-        CheckError(pgm_init_node(&n4, g, "n4"));
-        CheckError(pgm_init_node(&n5, g, "n5"));
-        CheckError(pgm_init_node(&n6, g, "n6"));
-        CheckError(pgm_init_node(&n7, g, "n7"));
-
-        CheckError(pgm_init_edge(&e0_1, n0, n1, "e0_1", &fast_mq_attr));
-        CheckError(pgm_init_edge(&e1_2, n1, n2, "e1_2", &fast_mq_attr));
-        CheckError(pgm_init_edge(&e2_3, n2, n3, "e2_3", &fast_mq_attr));
-        CheckError(pgm_init_edge(&e3_4, n3, n4, "e3_4", &fast_mq_attr));
-        CheckError(pgm_init_edge(&e4_5, n4, n5, "e4_5", &fast_mq_attr));
-        CheckError(pgm_init_edge(&e5_6, n5, n6, "e5_6", &fifo_attr));
-        CheckError(pgm_init_edge(&e6_7, n6, n7, "e6_7", &fast_mq_attr));
-
-        pthread_barrier_init(&init_barrier, 0, 7);
-        //pthread_create(&t0, 0, thread, &n0);
-        printf("right before creating t1 thread...\n");
-        pthread_create(&t1, 0, thread_resize, &n1);
-        pthread_create(&t2, 0, thread_compute_gradients, &n2);
-        pthread_create(&t3, 0, thread_compute_hists, &n3);
-        pthread_create(&t4, 0, thread_normalize_hists, &n4);
-        pthread_create(&t5, 0, thread_classify_hists, &n5);
-        pthread_create(&t6, 0, thread_collect_loc, &n6);
-        CheckError(pgm_claim_node(n0));
-        CheckError(pgm_claim_node(n7));
-
-        printf("right before barrier in main thread...\n");
-        pthread_barrier_wait(&init_barrier);
-        printf("right after barrier in main thread...\n");
-        // end (for PGM^RT)
-    }
-
-    HOG_Impl::~HOG_Impl()
-    {
-        CheckError(pgm_terminate(n0));
-        pthread_barrier_wait(&init_barrier);
-        CheckError(pgm_release_node(n0));
-        CheckError(pgm_release_node(n7));
-        printf("Joining pthreads...\n");
-        //pthread_join(t0, 0);
-        pthread_join(t1, 0);
-        pthread_join(t2, 0);
-        pthread_join(t3, 0);
-        pthread_join(t4, 0);
-        pthread_join(t5, 0);
-        pthread_join(t6, 0);
-
-        CheckError(pgm_destroy_graph(g));
-        CheckError(pgm_destroy());
     }
 
     static int numPartsWithin(int size, int part_size, int stride)
@@ -503,53 +404,26 @@ namespace
 
         BufferPool pool(Stream::Null());
 
-        Size wins_per_img = numPartsWithin(img.size(), win_size_, win_stride_);
-        GpuMat labels;
-        if (confidences == NULL)
-        {
-            labels = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
-        }
-        else
-        {
-            labels = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
-        }
-
         GpuMat block_hists = pool.getBuffer(1, getTotalHistSize(img.size()), CV_32FC1);
-        GpuMat grad       = pool.getBuffer(img.size(), CV_32FC2);
-        GpuMat qangle     = pool.getBuffer(img.size(), CV_8UC2);
+        computeBlockHistograms(img, block_hists, Stream::Null());
 
-        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
-        CheckError(pgm_get_edges_out(n0, out_edge, 1));
-        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
-        if (out_buf == NULL)
-            fprintf(stdout, "compute gradients out buffer is NULL\n");
-        out_buf->height = img.rows;
-        out_buf->width = img.cols;
-        out_buf->grad = grad;
-        out_buf->qangle = qangle;
-        out_buf->block_hists = block_hists.ptr<float>();
-        out_buf->stream = StreamAccessor::getStream(Stream::Null());
-        out_buf->hog_agent = this;
-        //out_buf->img = &img;
-        out_buf->img = img;
-        out_buf->confidences = confidences;
-        out_buf->labels = labels;
-
-        CheckError(pgm_complete(n0));
-
-        // computing gradients
-
-        // computing hists
-
-        // normalizing hists
-
-        // classify hists
-
-        pgm_wait(n5);
-        free(out_edge);
+        Size wins_per_img = numPartsWithin(img.size(), win_size_, win_stride_);
 
         if (confidences == NULL)
         {
+            GpuMat labels = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
+
+            hog::classify_hists(win_size_.height, win_size_.width,
+                                block_stride_.height, block_stride_.width,
+                                win_stride_.height, win_stride_.width,
+                                img.rows, img.cols,
+                                block_hists.ptr<float>(),
+                                detector_.ptr<float>(),
+                                (float)free_coef_,
+                                (float)hit_threshold_,
+                                cell_size_.width, cells_per_block_.width,
+                                labels.ptr());
+
             Mat labels_host;
             labels.download(labels_host);
             unsigned char* vec = labels_host.ptr();
@@ -564,6 +438,19 @@ namespace
         }
         else
         {
+            GpuMat labels = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
+
+            hog::compute_confidence_hists(win_size_.height, win_size_.width,
+                                          block_stride_.height, block_stride_.width,
+                                          win_stride_.height, win_stride_.width,
+                                          img.rows, img.cols,
+                                          block_hists.ptr<float>(),
+                                          detector_.ptr<float>(),
+                                          (float)free_coef_,
+                                          (float)hit_threshold_,
+                                          cell_size_.width, cells_per_block_.width,
+                                          labels.ptr<float>());
+
             Mat labels_host;
             labels.download(labels_host);
             float* vec = labels_host.ptr<float>();
@@ -617,18 +504,6 @@ namespace
         BufferPool pool(Stream::Null());
 
         found_locations.clear();
-        GpuMat *labels_array = new GpuMat[level_scale.size()];
-        GpuMat *smaller_img_arr = new GpuMat[level_scale.size()];
-        GpuMat *block_hists_arr = new GpuMat[level_scale.size()];
-        GpuMat *grad_arr = new GpuMat[level_scale.size()];
-        GpuMat *qangle_arr = new GpuMat[level_scale.size()];
-
-        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
-        CheckError(pgm_get_edges_out(n0, out_edge, 1));
-        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
-        if (out_buf == NULL)
-            fprintf(stdout, "compute gradients out buffer is NULL\n");
-
         for (size_t i = 0; i < level_scale.size(); i++)
         {
             scale = level_scale[i];
@@ -638,70 +513,36 @@ namespace
             GpuMat smaller_img;
             if (sz == img.size())
             {
-                smaller_img = smaller_img_arr[i] = img;
+                smaller_img = img;
             }
             else
             {
-                smaller_img = smaller_img_arr[i] = pool.getBuffer(sz, img.type());
+                smaller_img = pool.getBuffer(sz, img.type());
+                switch (img.type())
+                {
+                    case CV_8UC1: hog::resize_8UC1(img, smaller_img); break;
+                    case CV_8UC4: hog::resize_8UC4(img, smaller_img); break;
+                }
             }
 
-            CV_Assert( smaller_img.type() == CV_8UC1 || smaller_img.type() == CV_8UC4 );
-            CV_Assert( win_stride_.width % block_stride_.width == 0 && win_stride_.height % block_stride_.height == 0 );
+            detect(smaller_img, level_hits,
+                   confidences ? &level_confidences : NULL);
 
-            if (detector_.empty())
-                return;
+            Size scaled_win_size(cvRound(win_size_.width * scale),
+                                 cvRound(win_size_.height * scale));
 
-            Size wins_per_img = numPartsWithin(sz, win_size_, win_stride_);
-            if (confidences == NULL)
+            for (size_t j = 0; j < level_hits.size(); j++)
             {
-                labels_array[i] = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
+                found_locations.push_back(Rect(Point2d(level_hits[j]) * scale, scaled_win_size));
+                if (confidences)
+                    confidences->push_back(level_confidences[j]);
             }
-            else
-            {
-                labels_array[i] = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
-            }
-            GpuMat labels = labels_array[i];
-
-            GpuMat block_hists = block_hists_arr[i] = pool.getBuffer(1, getTotalHistSize(smaller_img.size()), CV_32FC1);
-            GpuMat grad       = grad_arr[i] = pool.getBuffer(smaller_img.size(), CV_32FC2);
-            GpuMat qangle     = qangle_arr[i] = pool.getBuffer(smaller_img.size(), CV_8UC2);
-
-            out_buf->height = smaller_img.rows;
-            out_buf->width = smaller_img.cols;
-            out_buf->grad = grad;
-            out_buf->qangle = qangle;
-            out_buf->block_hists = block_hists.ptr<float>();
-            out_buf->stream = StreamAccessor::getStream(Stream::Null());
-            out_buf->hog_agent = this;
-            out_buf->img = smaller_img;
-            out_buf->scale = scale;
-            out_buf->smaller_img = img;
-            out_buf->confidences = confidences ? &level_confidences : NULL;
-            out_buf->all_confidences = confidences;
-            out_buf->labels = labels;
-            out_buf->labels_array = labels_array;
-            out_buf->smaller_img_arr = smaller_img_arr;
-            out_buf->block_hists_arr = block_hists_arr;
-            out_buf->grad_arr = grad_arr;
-            out_buf->qangle_arr = qangle_arr;
-            out_buf->level_scale = level_scale;
-            out_buf->found_locations = &found_locations;
-
-            CheckError(pgm_complete(n0));
-
-            // resize image
-
-            // computing gradients
-
-            // computing hists
-
-            // normalizing hists
-
-            // classify hists
         }
-        // collect locations
-        pgm_wait(n7);
-        free(out_edge);
+
+        if (group_threshold_ > 0)
+        {
+            groupRectangles(found_locations, group_threshold_, 0.2/*magic number copied from CPU version*/);
+        }
     }
 
     void HOG_Impl::compute(InputArray _img,
@@ -757,9 +598,7 @@ namespace
         return static_cast<int>(block_hist_size * blocks_per_img.area());
     }
 
-
-
-    void* thread_compute_hists(void* _node)
+    void* HOG_Impl::thread_detect_multiscale(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
         node_t& node = *((node_t*)_node);
@@ -790,7 +629,181 @@ namespace
                 if(ret != PGM_TERMINATE)
                 {
                     CheckError(ret);
+#if DEBUG
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
+
+                    {
+                        in_buf->hog_agent = this;
+                        CV_Assert( in_buf->img.type() == CV_8UC1 || in_buf->img.type() == CV_8UC4 );
+                        CV_Assert( in_buf->all_confidences == NULL || in_buf->hog_agent->group_threshold_ == 0 );
+
+                        std::vector<double> level_scale;
+                        double scale = 1.0;
+                        int levels = 0;
+                        for (levels = 0; levels < in_buf->hog_agent->nlevels_; levels++)
+                        {
+                            level_scale.push_back(scale);
+
+                            if (cvRound(in_buf->img.cols / scale) < in_buf->hog_agent->win_size_.width ||
+                                    cvRound(in_buf->img.rows / scale) < in_buf->hog_agent->win_size_.height ||
+                                    in_buf->hog_agent->scale0_ <= 1)
+                            {
+                                break;
+                            }
+
+                            scale *= in_buf->hog_agent->scale0_;
+                        }
+                        levels = std::max(levels, 1);
+                        level_scale.resize(levels);
+
+                        std::vector<Point> level_hits;
+                        std::vector<double> level_confidences;
+
+                        BufferPool pool(Stream::Null());
+
+                        in_buf->found_locations->clear();
+                        GpuMat *labels_array = new GpuMat[level_scale.size()];
+                        GpuMat *smaller_img_arr = new GpuMat[level_scale.size()];
+                        GpuMat *block_hists_arr = new GpuMat[level_scale.size()];
+                        GpuMat *grad_arr = new GpuMat[level_scale.size()];
+                        GpuMat *qangle_arr = new GpuMat[level_scale.size()];
+
+                        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+                        CheckError(pgm_get_edges_out(node, out_edge, 1));
+                        struct params_compute_hists *out_buf = (struct
+                                params_compute_hists
+                                *)pgm_get_edge_buf_p(*out_edge);
+                        if (out_buf == NULL)
+                            fprintf(stdout, "compute gradients out buffer is NULL\n");
+
+                        for (size_t i = 0; i < level_scale.size(); i++)
+                        {
+                            scale = level_scale[i];
+
+                            Size sz(cvRound(in_buf->img.cols / scale), cvRound(in_buf->img.rows / scale));
+
+                            GpuMat smaller_img;
+                            if (sz == in_buf->img.size())
+                            {
+                                smaller_img = smaller_img_arr[i] = in_buf->img;
+                            }
+                            else
+                            {
+                                smaller_img = smaller_img_arr[i] = pool.getBuffer(sz, in_buf->img.type());
+                            }
+
+                            CV_Assert( smaller_img.type() == CV_8UC1 || smaller_img.type() == CV_8UC4 );
+                            CV_Assert( in_buf->hog_agent->win_stride_.width %
+                                    in_buf->hog_agent->block_stride_.width == 0
+                                    && in_buf->hog_agent->win_stride_.height %
+                                    in_buf->hog_agent->block_stride_.height == 0
+                                    );
+
+                            if (in_buf->hog_agent->detector_.empty())
+                                break;
+
+                            Size wins_per_img = numPartsWithin(sz,
+                                    in_buf->hog_agent->win_size_,
+                                    in_buf->hog_agent->win_stride_);
+                            if (in_buf->all_confidences == NULL)
+                            {
+                                labels_array[i] = pool.getBuffer(1, wins_per_img.area(), CV_8UC1);
+                            }
+                            else
+                            {
+                                labels_array[i] = pool.getBuffer(1, wins_per_img.area(), CV_32FC1);
+                            }
+                            GpuMat labels = labels_array[i];
+
+                            GpuMat block_hists = block_hists_arr[i] =
+                                pool.getBuffer(1,
+                                        in_buf->hog_agent->getTotalHistSize(smaller_img.size()),
+                                        CV_32FC1);
+                            GpuMat grad       = grad_arr[i] = pool.getBuffer(smaller_img.size(), CV_32FC2);
+                            GpuMat qangle     = qangle_arr[i] = pool.getBuffer(smaller_img.size(), CV_8UC2);
+
+                            out_buf->height = smaller_img.rows;
+                            out_buf->width = smaller_img.cols;
+                            out_buf->grad = grad;
+                            out_buf->qangle = qangle;
+                            out_buf->block_hists = block_hists.ptr<float>();
+                            out_buf->stream = StreamAccessor::getStream(Stream::Null());
+                            out_buf->hog_agent = in_buf->hog_agent;
+                            out_buf->img = smaller_img;
+                            out_buf->scale = scale;
+                            out_buf->smaller_img = in_buf->img;
+                            out_buf->confidences = in_buf->all_confidences ? &level_confidences : NULL;
+                            out_buf->all_confidences = in_buf->all_confidences;
+                            out_buf->labels = labels;
+                            out_buf->labels_array = labels_array;
+                            out_buf->smaller_img_arr = smaller_img_arr;
+                            out_buf->block_hists_arr = block_hists_arr;
+                            out_buf->grad_arr = grad_arr;
+                            out_buf->qangle_arr = qangle_arr;
+                            out_buf->level_scale = level_scale;
+                            out_buf->found_locations = in_buf->found_locations;
+                            out_buf->img_to_show = in_buf->img_to_show;
+                            out_buf->video_writer = in_buf->video_writer;
+                            out_buf->filenames = in_buf->filenames;
+                            out_buf->frame = in_buf->frame;
+                            out_buf->vc = in_buf->vc;
+
+                            CheckError(pgm_complete(node));
+                        }
+                        free(out_edge);
+                    }
+                }
+                else
+                {
+                    fprintf(stdout, "%s- %d terminates\n", tabbuf, node.node);
+                }
+
+            } while(ret != PGM_TERMINATE);
+        }
+
+        pthread_barrier_wait(&init_barrier);
+
+        CheckError(pgm_release_node(node));
+
+        free(in_edge);
+        pthread_exit(0);
+    }
+
+    void* HOG_Impl::thread_compute_hists(void* _node)
+    {
+        char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
+        node_t& node = *((node_t*)_node);
+        int ret = 0;
+
+        tabbuf[node.node] = '\0';
+
+        CheckError(pgm_claim_node(node));
+
+        edge_t *in_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_in(node, in_edge, 1));
+        struct params_compute_hists *in_buf = (struct params_compute_hists *)pgm_get_edge_buf_c(*in_edge);
+        if (in_buf == NULL)
+            fprintf(stderr, "compute gradients in buffer is NULL\n");
+        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
+        CheckError(pgm_get_edges_out(node, out_edge, 1));
+        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
+        if (out_buf == NULL)
+            fprintf(stderr, "compute gradients out buffer is NULL\n");
+
+        pthread_barrier_wait(&init_barrier);
+
+        if(!errors)
+        {
+            do {
+                ret = pgm_wait(node);
+
+                if(ret != PGM_TERMINATE)
+                {
+                    CheckError(ret);
+#if DEBUG
+                    fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
                     hog::compute_hists(in_buf->hog_agent->nbins_,
                             in_buf->hog_agent->block_stride_.width, in_buf->hog_agent->block_stride_.height,
                             in_buf->height, in_buf->width,
@@ -822,7 +835,7 @@ namespace
         pthread_exit(0);
     }
 
-    void* thread_normalize_hists(void* _node)
+    void* HOG_Impl::thread_normalize_hists(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
         node_t& node = *((node_t*)_node);
@@ -853,7 +866,9 @@ namespace
                 if(ret != PGM_TERMINATE)
                 {
                     CheckError(ret);
+#if DEBUG
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
                     hog::normalize_hists(in_buf->hog_agent->nbins_,
                             in_buf->hog_agent->block_stride_.width, in_buf->hog_agent->block_stride_.height,
                             in_buf->height, in_buf->width,
@@ -886,7 +901,7 @@ namespace
         pthread_exit(0);
     }
 
-    void* thread_compute_gradients(void* _node)
+    void* HOG_Impl::thread_compute_gradients(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
         node_t& node = *((node_t*)_node);
@@ -917,7 +932,9 @@ namespace
                 if(ret != PGM_TERMINATE)
                 {
                     CheckError(ret);
+#if DEBUG
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
                     cv::Size blocks_per_win =
                         numPartsWithin(in_buf->hog_agent->win_size_,
                                 in_buf->hog_agent->block_size_,
@@ -972,7 +989,7 @@ namespace
         pthread_exit(0);
     }
 
-    void* thread_classify_hists(void* _node)
+    void* HOG_Impl::thread_classify_hists(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
         node_t& node = *((node_t*)_node);
@@ -1003,7 +1020,9 @@ namespace
                 if(ret != PGM_TERMINATE)
                 {
                     CheckError(ret);
+#if DEBUG
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
                     if (in_buf->confidences == NULL)
                     {
                         hog::classify_hists(in_buf->hog_agent->win_size_.height, in_buf->hog_agent->win_size_.width,
@@ -1054,7 +1073,7 @@ namespace
         pthread_exit(0);
     }
 
-    void* thread_resize(void* _node)
+    void* HOG_Impl::thread_resize(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
         node_t& node = *((node_t*)_node);
@@ -1085,7 +1104,9 @@ namespace
                 if(ret != PGM_TERMINATE)
                 {
                     CheckError(ret);
+#if DEBUG
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
 
                     Size sz(cvRound(in_buf->img.cols / in_buf->scale), cvRound(in_buf->img.rows / in_buf->scale));
 
@@ -1121,7 +1142,7 @@ namespace
         pthread_exit(0);
     }
 
-    void* thread_collect_loc(void* _node)
+    void* HOG_Impl::thread_collect_loc(void* _node)
     {
         char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
         node_t& node = *((node_t*)_node);
@@ -1152,7 +1173,9 @@ namespace
                 if(ret != PGM_TERMINATE)
                 {
                     CheckError(ret);
+#if DEBUG
                     fprintf(stdout, "%s%d fires\n", tabbuf, node.node);
+#endif
 
                     std::vector<Point> level_hits;
                     std::vector<double> level_confidences;
@@ -1231,10 +1254,12 @@ namespace
                         groupRectangles(*in_buf->found_locations, in_buf->hog_agent->group_threshold_, 0.2/*magic number copied from CPU version*/);
                     }
 
-                    //CheckError(pgm_swap_edge_bufs(in_buf, out_buf));
-                    //struct params_compute_hists *temp = in_buf;
-                    //in_buf = out_buf;
-                    //out_buf = temp;
+                    out_buf->img_to_show = in_buf->img_to_show;
+                    out_buf->video_writer = in_buf->video_writer;
+                    out_buf->filenames = in_buf->filenames;
+                    out_buf->frame = in_buf->frame;
+                    out_buf->found_locations = in_buf->found_locations;
+                    out_buf->vc = in_buf->vc;
 
                     CheckError(pgm_complete(node));
                 }
@@ -1257,37 +1282,57 @@ namespace
     void HOG_Impl::computeBlockHistograms(const GpuMat& img, GpuMat& block_hists, Stream& stream)
     {
         BufferPool pool(stream);
-        //cv::Size blocks_per_win = numPartsWithin(win_size_, block_size_, block_stride_);
-        //float  angleScale = static_cast<float>(nbins_ / CV_PI);
+        cv::Size blocks_per_win = numPartsWithin(win_size_, block_size_, block_stride_);
+        float  angleScale = static_cast<float>(nbins_ / CV_PI);
         GpuMat grad       = pool.getBuffer(img.size(), CV_32FC2);
         GpuMat qangle     = pool.getBuffer(img.size(), CV_8UC2);
 
-        edge_t *out_edge = (edge_t *)calloc(1, sizeof(edge_t));
-        CheckError(pgm_get_edges_out(n0, out_edge, 1));
-        struct params_compute_hists *out_buf = (struct params_compute_hists *)pgm_get_edge_buf_p(*out_edge);
-        if (out_buf == NULL)
-            fprintf(stdout, "compute gradients out buffer is NULL\n");
-        out_buf->height = img.rows;
-        out_buf->width = img.cols;
-        out_buf->grad = grad;
-        out_buf->qangle = qangle;
-        out_buf->block_hists = block_hists.ptr<float>();
-        out_buf->stream = StreamAccessor::getStream(stream);
-        out_buf->hog_agent = this;
-        //out_buf->img = &img;
-        out_buf->img = img;
+        hog::set_up_constants(nbins_,
+                              block_stride_.width, block_stride_.height,
+                              blocks_per_win.width, blocks_per_win.height,
+                              cells_per_block_.width, cells_per_block_.height,
+                              StreamAccessor::getStream(stream));
 
-        CheckError(pgm_complete(n0));
+        switch (img.type())
+        {
+            case CV_8UC1:
+                hog::compute_gradients_8UC1(nbins_,
+                                            img.rows, img.cols, img,
+                                            angleScale,
+                                            grad, qangle,
+                                            gamma_correction_,
+                                            StreamAccessor::getStream(stream));
+                break;
+            case CV_8UC4:
+                hog::compute_gradients_8UC4(nbins_,
+                                            img.rows, img.cols, img,
+                                            angleScale,
+                                            grad, qangle,
+                                            gamma_correction_,
+                                            StreamAccessor::getStream(stream));
+                break;
+        }
 
-        // computing gradients
+        hog::compute_hists(nbins_,
+                           block_stride_.width, block_stride_.height,
+                           img.rows, img.cols,
+                           grad, qangle,
+                           (float)getWinSigma(),
+                           block_hists.ptr<float>(),
+                           cell_size_.width, cell_size_.height,
+                           cells_per_block_.width, cells_per_block_.height,
+                           StreamAccessor::getStream(stream));
 
-        // computing hists
-
-        // normalizing hists
-
-        pgm_wait(n4);
-        free(out_edge);
+        hog::normalize_hists(nbins_,
+                             block_stride_.width, block_stride_.height,
+                             img.rows, img.cols,
+                             block_hists.ptr<float>(),
+                             (float)threshold_L2hys_,
+                             cell_size_.width, cell_size_.height,
+                             cells_per_block_.width, cells_per_block_.height,
+                             StreamAccessor::getStream(stream));
     }
+
 }
 
 Ptr<cuda::HOG> cv::cuda::HOG::create(Size win_size,

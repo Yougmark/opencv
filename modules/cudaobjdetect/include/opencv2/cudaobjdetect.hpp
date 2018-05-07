@@ -48,6 +48,7 @@
 #endif
 
 #include "opencv2/core/cuda.hpp"
+#include "pgm.h"
 
 /**
   @addtogroup cuda
@@ -186,6 +187,39 @@ public:
     virtual void compute(InputArray img,
                          OutputArray descriptors,
                          Stream& stream = Stream::Null()) = 0;
+
+    /** @brief Thread barrier to synchronize the initialization and release of
+     * threads (nodes).
+     */
+    pthread_barrier_t init_barrier;
+
+    /** @brief Node function that compute gradients.
+     */
+    virtual void* thread_compute_gradients(void* node) = 0;
+
+    /** @brief Node function that computes histogram of blocks.
+     */
+    virtual void* thread_compute_hists(void* node) = 0;
+
+    /** @brief Node function that normalizes histogram of blocks.
+     */
+    virtual void* thread_normalize_hists(void* node) = 0;
+
+    /** @brief Node function that classifies blocks.
+     */
+    virtual void* thread_classify_hists(void* node) = 0;
+
+    /** @brief Node function that resizes images.
+     */
+    virtual void* thread_resize(void* node) = 0;
+
+    /** @brief Node function that collect locations of pedestrians (CPU).
+     */
+    virtual void* thread_collect_loc(void* node) = 0;
+
+    /** @brief Node function that prepare multi-level images.
+     */
+    virtual void* thread_detect_multiscale(void* _node) = 0;
 };
 
 //
