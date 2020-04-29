@@ -38,6 +38,12 @@ GMat blur(const GMat& src, const Size& ksize, const Point& anchor,
     return imgproc::GBlur::on(src, ksize, anchor, borderType, bordVal);
 }
 
+GMat convolve(const GMat& src, cv::dnn::Net& test, const Size& ksize, const Point& anchor,
+               int borderType, const Scalar& bordVal)
+{
+    return imgproc::GConvolve::on(src, test, ksize, anchor, borderType, bordVal);
+}
+
 GMat gaussianBlur(const GMat& src, const Size& ksize, double sigmaX, double sigmaY,
                   int borderType, const Scalar& bordVal)
 {

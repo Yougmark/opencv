@@ -9,6 +9,7 @@
 #define OPENCV_GAPI_IMGPROC_HPP
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/dnn.hpp>
 
 #include <utility> // std::tuple
 
@@ -50,6 +51,12 @@ namespace imgproc {
 
     G_TYPED_KERNEL(GBlur, <GMat(GMat,Size,Point,int,Scalar)>,         "org.opencv.imgproc.filters.blur"){
         static GMatDesc outMeta(GMatDesc in, Size, Point, int, Scalar) {
+            return in;
+        }
+    };
+
+    G_TYPED_KERNEL(GConvolve, <GMat(GMat,cv::dnn::Net,Size,Point,int,Scalar)>,         "org.opencv.imgproc.filters.convolve"){
+        static GMatDesc outMeta(GMatDesc in, cv::dnn::Net, Size, Point, int, Scalar) {
             return in;
         }
     };
@@ -406,6 +413,8 @@ center.
 @sa  boxFilter, bilateralFilter, GaussianBlur, medianBlur
  */
 GAPI_EXPORTS GMat blur(const GMat& src, const Size& ksize, const Point& anchor = Point(-1,-1),
+                       int borderType = BORDER_DEFAULT, const Scalar& borderValue = Scalar(0));
+GAPI_EXPORTS GMat convolve(const GMat& src, cv::dnn::Net& test, const Size& ksize, const Point& anchor = Point(-1,-1),
                        int borderType = BORDER_DEFAULT, const Scalar& borderValue = Scalar(0));
 
 

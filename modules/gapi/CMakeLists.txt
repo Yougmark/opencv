@@ -22,6 +22,7 @@ set(the_description "OpenCV G-API Core Module")
 ocv_add_module(gapi
     REQUIRED
       opencv_imgproc
+      opencv_dnn
     OPTIONAL
       opencv_video
 )

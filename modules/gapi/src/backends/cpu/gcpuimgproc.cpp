@@ -83,6 +83,24 @@ GAPI_OCV_KERNEL(GCPUBlur, cv::gapi::imgproc::GBlur)
     }
 };
 
+GAPI_OCV_KERNEL(GCPUConvolve, cv::gapi::imgproc::GConvolve)
+{
+    static void run(const cv::Mat& in, const cv::dnn::Net& test, const cv::Size& ksize, const cv::Point& anchor, int borderType, const cv::Scalar& bordVal, cv::Mat &out)
+    {
+        if( borderType == cv::BORDER_CONSTANT )
+        {
+            cv::Mat temp_in;
+            int width_add = (ksize.width - 1) / 2;
+            int height_add =  (ksize.height - 1) / 2;
+            cv::copyMakeBorder(in, temp_in, height_add, height_add, width_add, width_add, borderType, bordVal);
+            cv::Rect rect = cv::Rect(height_add, width_add, in.cols, in.rows);
+            cv::blur(temp_in(rect), out, ksize, anchor, borderType);
+        }
+        else
+            cv::blur(in, out, ksize, anchor, borderType);
+    }
+};
+
 
 GAPI_OCV_KERNEL(GCPUFilter2D, cv::gapi::imgproc::GFilter2D)
 {
@@ -434,6 +452,7 @@ cv::gapi::GKernelPackage cv::gapi::imgproc::cpu::kernels()
         , GCPUSepFilter
         , GCPUBoxFilter
         , GCPUBlur
+        , GCPUConvolve
         , GCPUGaussBlur
         , GCPUMedianBlur
         , GCPUErode
