@@ -55,8 +55,8 @@ namespace imgproc {
         }
     };
 
-    G_TYPED_KERNEL(GConvolve, <GMat(GMat,cv::dnn::Net,Size,Point,int,Scalar)>,         "org.opencv.imgproc.filters.convolve"){
-        static GMatDesc outMeta(GMatDesc in, cv::dnn::Net, Size, Point, int, Scalar) {
+    G_TYPED_KERNEL(GConvolve, <GMat(GMat,cv::dnn::Net*,std::vector<cv::Mat>*, std::vector<std::string>*)>,         "org.opencv.imgproc.filters.convolve"){
+        static GMatDesc outMeta(GMatDesc in, cv::dnn::Net*, std::vector<cv::Mat>*, std::vector<std::string>*) {
             return in;
         }
     };
@@ -414,8 +414,8 @@ center.
  */
 GAPI_EXPORTS GMat blur(const GMat& src, const Size& ksize, const Point& anchor = Point(-1,-1),
                        int borderType = BORDER_DEFAULT, const Scalar& borderValue = Scalar(0));
-GAPI_EXPORTS GMat convolve(const GMat& src, cv::dnn::Net& test, const Size& ksize, const Point& anchor = Point(-1,-1),
-                       int borderType = BORDER_DEFAULT, const Scalar& borderValue = Scalar(0));
+
+GAPI_EXPORTS GMat convolve(const GMat& src, cv::dnn::Net* net, std::vector<cv::Mat>* outs, std::vector<std::string>* outNames);
 
 
 //GAPI_EXPORTS_W void blur( InputArray src, OutputArray dst,
