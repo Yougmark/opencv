@@ -105,7 +105,7 @@ set(gapi_srcs
     # CUDA Backend (currently built-in)
     src/backends/cuda/gcudabackend.cpp
     src/backends/cuda/gcudakernel.cpp
-    src/backends/cuda/gcudaimgproc.cpp
+    src/backends/cuda/gcudadnn.cpp
 
     # Fluid Backend (also built-in, FIXME:move away)
     src/backends/fluid/gfluidbuffer.cpp

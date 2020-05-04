@@ -7,12 +7,12 @@
 
 #include "precomp.hpp"
 
-#include <opencv2/gapi/imgproc.hpp>
-#include <opencv2/gapi/cuda/imgproc.hpp>
-#include "backends/cuda/gcudaimgproc.hpp"
+#include <opencv2/gapi/dnn.hpp>
+#include <opencv2/gapi/cuda/dnn.hpp>
+#include "backends/cuda/gcudadnn.hpp"
 
 
-GAPI_CUDA_KERNEL(GCUDAConvolve, cv::gapi::imgproc::GConvolve)
+GAPI_CUDA_KERNEL(GCUDAConvolve, cv::gapi::dnn::GConvolve)
 {
     static void run(const cv::Mat& in, cv::dnn::Net* net, std::vector<cv::Mat>* outs, std::vector<std::string>* outNames, cv::Mat &out)
     {
@@ -23,7 +23,7 @@ GAPI_CUDA_KERNEL(GCUDAConvolve, cv::gapi::imgproc::GConvolve)
 };
 
 
-cv::gapi::GKernelPackage cv::gapi::imgproc::cuda::kernels()
+cv::gapi::GKernelPackage cv::gapi::dnn::cuda::kernels()
 {
     static auto pkg = cv::gapi::kernels
         < GCUDAConvolve

@@ -5,8 +5,8 @@
 // Copyright (C) 2018 Intel Corporation
 
 
-#ifndef OPENCV_GAPI_GCUDAIMGPROC_HPP
-#define OPENCV_GAPI_GCUDAIMGPROC_HPP
+#ifndef OPENCV_GAPI_GCUDADNN_HPP
+#define OPENCV_GAPI_GCUDADNN_HPP
 
 #include <map>
 #include <string>
@@ -20,4 +20,4 @@ void loadCUDAImgProc(std::map<std::string, cv::GCUDAKernel> &kmap);
 
 }}
 
-#endif // OPENCV_GAPI_GCUDAIMGPROC_HPP
+#endif // OPENCV_GAPI_GCUDADNN_HPP

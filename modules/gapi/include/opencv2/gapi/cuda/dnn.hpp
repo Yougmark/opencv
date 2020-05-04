@@ -5,15 +5,15 @@
 // Copyright (C) 2018 Intel Corporation
 
 
-#ifndef OPENCV_GAPI_CUDA_IMGPROC_API_HPP
-#define OPENCV_GAPI_CUDA_IMGPROC_API_HPP
+#ifndef OPENCV_GAPI_CUDA_DNN_API_HPP
+#define OPENCV_GAPI_CUDA_DNN_API_HPP
 
 #include <opencv2/core/cvdef.h>     // GAPI_EXPORTS
 #include <opencv2/gapi/gkernel.hpp> // GKernelPackage
 
 namespace cv {
 namespace gapi {
-namespace imgproc {
+namespace dnn {
 namespace cuda {
 
     GAPI_EXPORTS GKernelPackage kernels();
@@ -24,4 +24,4 @@ namespace cuda {
 } // namespace cv
 
 
-#endif // OPENCV_GAPI_CUDA_IMGPROC_API_HPP
+#endif // OPENCV_GAPI_CUDA_DNN_API_HPP
