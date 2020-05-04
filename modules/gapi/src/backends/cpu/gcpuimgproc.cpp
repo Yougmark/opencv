@@ -83,17 +83,6 @@ GAPI_OCV_KERNEL(GCPUBlur, cv::gapi::imgproc::GBlur)
     }
 };
 
-GAPI_OCV_KERNEL(GCPUConvolve, cv::gapi::imgproc::GConvolve)
-{
-    static void run(const cv::Mat& in, cv::dnn::Net* net, std::vector<cv::Mat>* outs, std::vector<std::string>* outNames, cv::Mat &out)
-    {
-        printf("before forward\n");
-        net->forward(*outs, *outNames);
-        printf("after forward\n");
-    }
-};
-
-
 GAPI_OCV_KERNEL(GCPUFilter2D, cv::gapi::imgproc::GFilter2D)
 {
     static void run(const cv::Mat& in, int ddepth, const cv::Mat& k, const cv::Point& anchor, const cv::Scalar& delta, int border,
@@ -444,7 +433,6 @@ cv::gapi::GKernelPackage cv::gapi::imgproc::cpu::kernels()
         , GCPUSepFilter
         , GCPUBoxFilter
         , GCPUBlur
-        , GCPUConvolve
         , GCPUGaussBlur
         , GCPUMedianBlur
         , GCPUErode

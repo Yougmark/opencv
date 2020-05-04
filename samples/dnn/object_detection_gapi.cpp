@@ -10,6 +10,7 @@
 #include <opencv2/gapi.hpp>
 #include <opencv2/gapi/core.hpp>
 #include <opencv2/gapi/imgproc.hpp>
+#include <opencv2/gapi/cuda/imgproc.hpp>
 
 #ifdef CV_CXX11
 #include <mutex>
@@ -233,7 +234,7 @@ int main(int argc, char** argv)
                     cv::GMat out  = cv::gapi::convolve(in, &net, &outs, &outNames);
                     cv::GComputation ac(in, out);
                     cv::Mat output_frame;
-                    ac.apply(frame, output_frame);
+                    ac.apply(frame, output_frame, cv::compile_args(cv::gapi::imgproc::cuda::kernels()));
 
                     printf("sync forward in thread\n");
                     //net.forward(outs, outNames);
