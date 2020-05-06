@@ -68,10 +68,10 @@ namespace cuda
 
     //! @cond IGNORED
     template<typename K, typename Callable>
-    GCUDAFunctor ocv_kernel(const Callable& c);
+    GCUDAFunctor cuda_kernel(const Callable& c);
 
     template<typename K, typename Callable>
-    GCUDAFunctor ocv_kernel(Callable& c);
+    GCUDAFunctor cuda_kernel(Callable& c);
     //! @endcond
 
 } // namespace cuda
@@ -362,14 +362,14 @@ private:
 
 //! @cond IGNORED
 template<typename K, typename Callable>
-gapi::cuda::GCUDAFunctor gapi::cuda::ocv_kernel(Callable& c)
+gapi::cuda::GCUDAFunctor gapi::cuda::cuda_kernel(Callable& c)
 {
     using P = detail::CUDACallHelper<Callable, typename K::InArgs, typename K::OutArgs>;
     return GCUDAFunctor(K::id(), std::bind(&P::callFunctor, std::placeholders::_1, std::ref(c)));
 }
 
 template<typename K, typename Callable>
-gapi::cuda::GCUDAFunctor gapi::cuda::ocv_kernel(const Callable& c)
+gapi::cuda::GCUDAFunctor gapi::cuda::cuda_kernel(const Callable& c)
 {
     using P = detail::CUDACallHelper<Callable, typename K::InArgs, typename K::OutArgs>;
     return GCUDAFunctor(K::id(), std::bind(&P::callFunctor, std::placeholders::_1, c));
