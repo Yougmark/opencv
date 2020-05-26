@@ -46,6 +46,14 @@ static int toNCHW(int idx)
     else return (4 + idx) % 3 + 1;
 }
 
+static int toNCDHW(int idx)
+{
+    CV_Assert(-5 <= idx && idx < 5);
+    if (idx == 0) return 0;
+    else if (idx > 0) return idx % 4 + 1;
+    else return (5 + idx) % 4 + 1;
+}
+
 // This values are used to indicate layer output's data layout where it's possible.
 enum DataLayout
 {
@@ -1323,6 +1331,8 @@ void TFImporter::populateNet(Net dstNet)
 
             if (getDataLayout(name, data_layouts) == DATA_LAYOUT_NHWC)
                 axis = toNCHW(axis);
+            else if (getDataLayout(name, data_layouts) == DATA_LAYOUT_NDHWC)
+                axis = toNCDHW(axis);
             layerParams.set("axis", axis);
 
             // input(0) or input(n-1) is concat_dim
@@ -1922,10 +1932,10 @@ void TFImporter::populateNet(Net dstNet)
             {
                 Mat factorHeight = getTensorContent(getConstBlob(layer, value_id, 1));
                 Mat factorWidth = getTensorContent(getConstBlob(layer, value_id, 2));
-                CV_CheckTypeEQ(factorHeight.type(), CV_32SC1, ""); CV_CheckEQ(factorHeight.total(), (size_t)1, "");
-                CV_CheckTypeEQ(factorWidth.type(), CV_32SC1, ""); CV_CheckEQ(factorWidth.total(), (size_t)1, "");
-                layerParams.set("zoom_factor_x", factorWidth.at<int>(0));
-                layerParams.set("zoom_factor_y", factorHeight.at<int>(0));
+                factorHeight.convertTo(factorHeight, CV_32F);
+                factorWidth.convertTo(factorWidth, CV_32F);
+                layerParams.set("zoom_factor_x", factorWidth.at<float>(0));
+                layerParams.set("zoom_factor_y", factorHeight.at<float>(0));
             }
             else
                 CV_Assert(layer.input_size() == 2 || layer.input_size() == 3);
