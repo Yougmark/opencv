@@ -65,7 +65,7 @@
 #include <opencv2/core/cuda.hpp>
 
 #include <opencv2/gapi/core.hpp>
-#include <opencv2/gapi/cpu/gcpukernel.hpp>
+#include <opencv2/gapi/rt/grtkernel.hpp>
 
 namespace cv {
 namespace dnn {
@@ -3207,16 +3207,13 @@ struct Net::Impl
 
         // a trivial Mat is used here because empty Mat is not accepted by GAPI;
         // empty Mat will trigger exception when creating internal mat.
-        cv::Mat in = Mat({1, 1, 1, 1}, CV_32F);
+        cv::Mat in = Mat({ 1, 1, 1, 1 }, CV_32F);
         cv::Mat out;
-        auto impl = cv::gapi::cpu::ocv_kernel<GLayer>(
-                    [=](const cv::Mat& in,
-                            cv::Ptr<LayerData> ld,
-                            cv::Mat& out)
-                    {
-                        if (!ld->flag)
-                            this->forwardLayer(*ld);
-                    });
+        auto impl = cv::gapi::rt::rt_kernel<GLayer>(
+            [=](const cv::Mat &in, cv::Ptr<LayerData> ld, cv::Mat &out) {
+                if (!ld->flag)
+                    this->forwardLayer(*ld);
+            });
         auto pkg = cv::gapi::kernels(impl);
         comp.apply(in, out, cv::compile_args(pkg));
 

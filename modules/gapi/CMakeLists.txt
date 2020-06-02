@@ -37,6 +37,7 @@ file(GLOB gapi_ext_hdrs
     "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/*.hpp"
     "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/*.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/cpu/*.hpp"
+    "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/rt/*.hpp"
     "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/fluid/*.hpp"
     "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/gpu/*.hpp"
     "${CMAKE_CURRENT_LIST_DIR}/include/opencv2/${name}/infer/*.hpp"
@@ -99,6 +100,10 @@ set(gapi_srcs
     src/backends/cpu/gcpuimgproc.cpp
     src/backends/cpu/gcpuvideo.cpp
     src/backends/cpu/gcpucore.cpp
+
+    # Real-time Backend
+    src/backends/rt/grtbackend.cpp
+    src/backends/rt/grtkernel.cpp
 
     # Fluid Backend (also built-in, FIXME:move away)
     src/backends/fluid/gfluidbuffer.cpp

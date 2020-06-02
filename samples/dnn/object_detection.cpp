@@ -219,7 +219,8 @@ int main(int argc, char** argv)
                 else
                 {
                     std::vector<Mat> outs;
-                    net.forward(outs, outNames);
+                    //net.forward(outs, outNames);
+                    net.forwardGraph(outs, outNames);
                     predictionsQueue.push(outs);
                 }
             }
