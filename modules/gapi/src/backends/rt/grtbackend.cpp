@@ -25,17 +25,8 @@
 
 #include "api/gbackend_priv.hpp" // FIXME: Make it part of Backend SDK!
 
-// FIXME: Is there a way to take a typed graph (our GModel),
-// and create a new typed graph _ATOP_ of that (by extending with a couple of
-// new types?).
-// Alternatively, is there a way to compose types graphs?
-//
-// If not, we need to introduce that!
-using GRTModel = ade::TypedGraph<cv::gimpl::Unit, cv::gimpl::Protocol>;
-
-// FIXME: Same issue with Typed and ConstTyped
-using GConstGRTModel =
-    ade::ConstTypedGraph<cv::gimpl::Unit, cv::gimpl::Protocol>;
+using GRTModel = ade::TypedGraph<cv::gimpl::Unit>;
+using GConstGRTModel = ade::ConstTypedGraph<cv::gimpl::Unit>;
 
 namespace
 {
@@ -76,8 +67,10 @@ cv::gimpl::GRTExecutable::GRTExecutable(
         switch (m_gm.metadata(nh).get<NodeType>().t)
         {
         case NodeType::OP:
+        {
             m_script.push_back({ nh, GModel::collectOutputMeta(m_gm, nh) });
             break;
+        }
         case NodeType::DATA:
         {
             m_dataNodes.push_back(nh);
@@ -99,7 +92,9 @@ cv::gimpl::GRTExecutable::GRTExecutable(
             break;
         }
         default:
+        {
             util::throw_error(std::logic_error("Unsupported NodeType type"));
+        }
         }
     }
 }

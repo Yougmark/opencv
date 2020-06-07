@@ -41,23 +41,6 @@ namespace gapi
 {
 namespace rt
 {
-/**
- * \addtogroup gapi_std_backends
- * @{
- *
- * @brief G-API backends available in this OpenCV version
- *
- * G-API backends play a corner stone role in G-API execution
- * stack. Every backend is hardware-oriented and thus can run its
- * kernels efficiently on the target platform.
- *
- * Backends are usually "black boxes" for G-API users -- on the API
- * side, all backends are represented as different objects of the
- * same class cv::gapi::GBackend.
- * User can manipulate with backends by specifying which kernels to use.
- *
- * @sa @ref gapi_hld
- */
 
 /**
  * @brief Get a reference to RT (OpenCV) backend.
