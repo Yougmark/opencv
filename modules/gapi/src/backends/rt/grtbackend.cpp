@@ -25,6 +25,8 @@
 
 #include "api/gbackend_priv.hpp" // FIXME: Make it part of Backend SDK!
 
+#include "executor/gstreamingexecutor.hpp"
+
 using GRTModel = ade::TypedGraph<cv::gimpl::Unit>;
 using GConstGRTModel = ade::ConstTypedGraph<cv::gimpl::Unit>;
 
@@ -48,6 +50,21 @@ class GRTBackendImpl final : public cv::gapi::GBackend::Priv
     }
 };
 } // namespace
+
+struct DataQueue
+{
+    static const char *name() { return "StreamingDataQueue"; }
+
+    explicit DataQueue(std::size_t capacity)
+    {
+        if (capacity)
+        {
+            q.set_capacity(capacity);
+        }
+    }
+
+    cv::gimpl::stream::Q q;
+};
 
 cv::gapi::GBackend cv::gapi::rt::backend()
 {

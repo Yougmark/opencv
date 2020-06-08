@@ -509,5 +509,5 @@ In GAPI module:
 ## Run YOLO
 
 ```
-./bin/example_dnn_object_detection_gapi --config=/home/yang/Projects/opencv_extra/testdata/dnn/yolo-voc.cfg --model=/home/yang/Projects/opencv_extra/testdata/dnn/yolo-voc.weights --classes=/home/yang/Projects/opencv/samples/data/dnn/object_detection_classes_pascal_voc.txt --width=416 --height=416 --scale=0.00392 --input=/home/yang/Projects/opencv_extra/testdata/dnn/street.png --rgb
+./bin/example_dnn_object_detection --config=/home/yang/Projects/opencv_extra/testdata/dnn/yolo-voc.cfg --model=/home/yang/Projects/opencv_extra/testdata/dnn/yolo-voc.weights --classes=/home/yang/Projects/opencv/samples/data/dnn/object_detection_classes_pascal_voc.txt --width=416 --height=416 --scale=0.00392 --input=/home/yang/Projects/opencv_extra/testdata/dnn/street.png --rgb
 ```
