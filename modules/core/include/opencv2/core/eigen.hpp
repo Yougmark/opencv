@@ -45,9 +45,14 @@
 #ifndef OPENCV_CORE_EIGEN_HPP
 #define OPENCV_CORE_EIGEN_HPP
 
+#ifndef EIGEN_WORLD_VERSION
+#error "Wrong usage of OpenCV's Eigen utility header. Include Eigen's headers first. See https://github.com/opencv/opencv/issues/17366"
+#endif
+
 #include "opencv2/core.hpp"
 
-#if EIGEN_WORLD_VERSION == 3 && EIGEN_MAJOR_VERSION >= 3
+#if EIGEN_WORLD_VERSION == 3 && EIGEN_MAJOR_VERSION >= 3 \
+    && defined(CV_CXX11) && defined(CV_CXX_STD_ARRAY)
 #include <unsupported/Eigen/CXX11/Tensor>
 #define OPENCV_EIGEN_TENSOR_SUPPORT
 #endif // EIGEN_WORLD_VERSION == 3 && EIGEN_MAJOR_VERSION >= 3
@@ -61,10 +66,18 @@
 namespace cv
 {
 
-//! @addtogroup core_eigen
+/** @addtogroup core_eigen
+These functions are provided for OpenCV-Eigen interoperability. They convert `Mat`
+objects to corresponding `Eigen::Matrix` objects and vice-versa. Consult the [Eigen
+documentation](https://eigen.tuxfamily.org/dox/group__TutorialMatrixClass.html) for
+information about the `Matrix` template type.
+
+@note Using these functions requires the `Eigen/Dense` or similar header to be
+included before this header.
+*/
 //! @{
 
-#ifdef OPENCV_EIGEN_TENSOR_SUPPORT
+#if defined(OPENCV_EIGEN_TENSOR_SUPPORT) || defined(CV_DOXYGEN)
 /** @brief Converts an Eigen::Tensor to a cv::Mat.
 
 The method converts an Eigen::Tensor with shape (H x W x C) to a cv::Mat where:
@@ -157,7 +170,7 @@ Eigen::TensorMap<Eigen::Tensor<float, 3, Eigen::RowMajor>> a_tensormap = cv2eige
 \endcode
 */
 template <typename _Tp> static inline
-Eigen::TensorMap<Eigen::Tensor<_Tp, 3, Eigen::RowMajor>> cv2eigen_tensormap(const cv::InputArray &src)
+Eigen::TensorMap<Eigen::Tensor<_Tp, 3, Eigen::RowMajor>> cv2eigen_tensormap(InputArray src)
 {
     Mat mat = src.getMat();
     CV_CheckTypeEQ(mat.type(), CV_MAKETYPE(traits::Type<_Tp>::value, mat.channels()), "");
