@@ -257,7 +257,7 @@ namespace GIslandModel
 
     // GIslandModel API
     void syncIslandTags(Graph &g, ade::Graph &orig_g);
-    void compileIslands(Graph &g, const ade::Graph &orig_g, const GCompileArgs &args);
+    void compileIslands(Graph &g, ade::Graph &orig_g, const GCompileArgs &args);
 
     // Debug routines
     // producerOf - returns an Island handle which produces given data object

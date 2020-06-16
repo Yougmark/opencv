@@ -30,7 +30,7 @@ void cv::gapi::GBackend::Priv::unpackKernel(ade::Graph             & /*graph  */
 }
 
 std::unique_ptr<cv::gimpl::GIslandExecutable>
-cv::gapi::GBackend::Priv::compile(const ade::Graph&,
+cv::gapi::GBackend::Priv::compile(ade::Graph&,
                                   const GCompileArgs&,
                                   const std::vector<ade::NodeHandle> &) const
 {
@@ -40,7 +40,7 @@ cv::gapi::GBackend::Priv::compile(const ade::Graph&,
 }
 
 std::unique_ptr<cv::gimpl::GIslandExecutable>
-cv::gapi::GBackend::Priv::compile(const ade::Graph& graph,
+cv::gapi::GBackend::Priv::compile(ade::Graph& graph,
                                   const GCompileArgs& args,
                                   const std::vector<ade::NodeHandle>& nodes,
                                   const std::vector<cv::gimpl::Data>&,

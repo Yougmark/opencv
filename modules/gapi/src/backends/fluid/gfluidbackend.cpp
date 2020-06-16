@@ -71,7 +71,7 @@ namespace
             fm.metadata(op_node).set(cv::gimpl::FluidUnit{fluid_impl, {}, 0, -1, {}, 0.0});
         }
 
-        virtual EPtr compile(const ade::Graph &graph,
+        virtual EPtr compile(ade::Graph &graph,
                              const cv::GCompileArgs &args,
                              const std::vector<ade::NodeHandle> &nodes) const override
         {

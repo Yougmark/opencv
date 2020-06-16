@@ -250,7 +250,7 @@ void GIslandModel::syncIslandTags(Graph &g, ade::Graph &orig_g)
     }
 }
 
-void GIslandModel::compileIslands(Graph &g, const ade::Graph &orig_g, const GCompileArgs &args)
+void GIslandModel::compileIslands(Graph &g, ade::Graph &orig_g, const GCompileArgs &args)
 {
     GModel::ConstGraph gm(orig_g);
 

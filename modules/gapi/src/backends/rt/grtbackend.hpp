@@ -52,8 +52,7 @@ class GRTExecutable final : public GIslandExecutable
     GArg packArg(const GArg &arg);
 
 public:
-    GRTExecutable(const ade::Graph &graph,
-                  const std::vector<ade::NodeHandle> &nodes);
+    GRTExecutable(ade::Graph &graph, const std::vector<ade::NodeHandle> &nodes);
 
     virtual inline bool canReshape() const override { return false; }
     virtual inline void reshape(ade::Graph &, const GCompileArgs &) override

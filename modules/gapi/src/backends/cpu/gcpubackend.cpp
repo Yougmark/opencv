@@ -56,7 +56,7 @@ namespace
             gm.metadata(op_node).set(cv::gimpl::CPUUnit{cpu_impl});
         }
 
-        virtual EPtr compile(const ade::Graph &graph,
+        virtual EPtr compile(ade::Graph &graph,
                              const cv::GCompileArgs &,
                              const std::vector<ade::NodeHandle> &nodes) const override
         {

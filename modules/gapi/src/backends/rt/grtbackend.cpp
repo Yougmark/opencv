@@ -43,7 +43,7 @@ class GRTBackendImpl final : public cv::gapi::GBackend::Priv
     }
 
     virtual EPtr
-    compile(const ade::Graph &graph, const cv::GCompileArgs &,
+    compile(ade::Graph &graph, const cv::GCompileArgs &,
             const std::vector<ade::NodeHandle> &nodes) const override
     {
         return EPtr{ new cv::gimpl::GRTExecutable(graph, nodes) };
@@ -74,7 +74,7 @@ cv::gapi::GBackend cv::gapi::rt::backend()
 
 // GRTExecutable implementation //////////////////////////////////////////////
 cv::gimpl::GRTExecutable::GRTExecutable(
-    const ade::Graph &g, const std::vector<ade::NodeHandle> &nodes)
+    ade::Graph &g, const std::vector<ade::NodeHandle> &nodes)
     : m_g(g), m_gm(m_g)
 {
     // Convert list of operations (which is topologically sorted already)

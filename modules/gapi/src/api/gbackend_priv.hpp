@@ -46,12 +46,12 @@ public:
     // NOTE - nodes are guaranteed to be topologically sorted.
 
     // NB: This method is deprecated
-    virtual EPtr compile(const ade::Graph   &graph,
+    virtual EPtr compile(ade::Graph   &graph,
                          const GCompileArgs &args,
                          const std::vector<ade::NodeHandle> &nodes) const;
 
 
-    virtual EPtr compile(const ade::Graph   &graph,
+    virtual EPtr compile(ade::Graph   &graph,
                          const GCompileArgs &args,
                          const std::vector<ade::NodeHandle> &nodes,
                          const std::vector<cv::gimpl::Data>& ins_data,

@@ -131,7 +131,7 @@ namespace {
             rm.metadata(op_node).set(cv::gimpl::render::ocv::RenderUnit{render_impl});
         }
 
-        virtual EPtr compile(const ade::Graph &graph,
+        virtual EPtr compile(ade::Graph &graph,
                              const cv::GCompileArgs& args,
                              const std::vector<ade::NodeHandle> &nodes) const override {
 
