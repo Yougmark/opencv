@@ -103,6 +103,20 @@ using GMetaArgs = std::vector<GMetaArg>;
 namespace gapi
 {
 /* -- include/opencv2/gapi/gkernel.hpp */
+class GAPI_EXPORTS GBackend
+{
+public:
+    class Priv;
+    GBackend();
+    explicit GBackend(std::shared_ptr<Priv> &&p);
+    Priv &priv();
+    const Priv &priv() const;
+    std::size_t hash() const;
+    bool operator==(const GBackend &rhs) const;
+
+private:
+    std::shared_ptr<Priv> m_priv;
+};
 class GFunctor
 {
 public:

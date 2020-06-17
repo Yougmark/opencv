@@ -20,6 +20,8 @@
 #include "backends/common/gbackend.hpp"
 #include "compiler/gislandmodel.hpp"
 
+#include "executor/gstreamingexecutor.hpp"
+
 namespace cv
 {
 namespace gimpl
@@ -33,7 +35,7 @@ struct Unit
 
 class GRTExecutable final : public GIslandExecutable
 {
-    const ade::Graph &m_g;
+    ade::Graph &m_g;
     GModel::ConstGraph m_gm;
 
     struct OperationInfo
@@ -50,6 +52,8 @@ class GRTExecutable final : public GIslandExecutable
     // Actual data of all resources in graph (both internal and external)
     Mag m_res;
     GArg packArg(const GArg &arg);
+
+    std::unordered_set<cv::gimpl::stream::Q *> m_internal_queues;
 
 public:
     GRTExecutable(ade::Graph &graph, const std::vector<ade::NodeHandle> &nodes);

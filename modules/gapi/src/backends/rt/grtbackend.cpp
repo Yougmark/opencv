@@ -25,8 +25,6 @@
 
 #include "api/gbackend_priv.hpp" // FIXME: Make it part of Backend SDK!
 
-#include "executor/gstreamingexecutor.hpp"
-
 using GRTModel = ade::TypedGraph<cv::gimpl::Unit>;
 using GConstGRTModel = ade::ConstTypedGraph<cv::gimpl::Unit>;
 
@@ -79,6 +77,7 @@ cv::gimpl::GRTExecutable::GRTExecutable(
 {
     // Convert list of operations (which is topologically sorted already)
     // into an execution script.
+    ade::TypedGraph<DataQueue> qgr(g);
     for (auto &nh : nodes)
     {
         switch (m_gm.metadata(nh).get<NodeType>().t)
@@ -106,6 +105,10 @@ cv::gimpl::GRTExecutable::GRTExecutable(
                 auto &mat = m_res.slot<cv::Mat>()[desc.rc];
                 createMat(mat_desc, mat);
             }
+
+            // add data queue that buffers data or pipelined execution cmd
+            qgr.metadata(nh).set(DataQueue(100));
+            m_internal_queues.insert(&qgr.metadata(nh).get<DataQueue>().q);
             break;
         }
         default:
