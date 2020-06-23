@@ -55,6 +55,17 @@ class GRTExecutable final : public GIslandExecutable
 
     std::unordered_set<cv::gimpl::stream::Q *> m_internal_queues;
 
+    // Converts list of operations that are already topologically sorted into a
+    // vector of execution scropt, and allocates memory for data (?).
+    // In addition, adds one DataQueue per incoming edges of each operation
+    // node.
+    void prepScriptData(const std::vector<ade::NodeHandle> &nodes);
+
+    void nodeActorThread(OperationInfo &op_info);
+
+    // threads of operation nodes
+    std::vector<std::thread> m_threads;
+
 public:
     GRTExecutable(ade::Graph &graph, const std::vector<ade::NodeHandle> &nodes);
 

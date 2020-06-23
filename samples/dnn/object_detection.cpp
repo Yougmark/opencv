@@ -149,8 +149,9 @@ int main(int argc, char** argv)
     // Load a model.
     Net net = readNet(modelPath, configPath, parser.get<String>("framework"));
     int backend = parser.get<int>("backend");
-    net.setPreferableBackend(backend);
-    net.setPreferableTarget(parser.get<int>("target"));
+    net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA); // backend);
+    net.setPreferableTarget(
+        cv::dnn::DNN_TARGET_CUDA); // parser.get<int>("target"));
     std::vector<String> outNames = net.getUnconnectedOutLayersNames();
 
     // Create a window

@@ -3188,31 +3188,41 @@ struct Net::Impl : public detail::NetImplBase
         if (lastld.flag)
             return;
 
-        // G-API code
+        // Create one node per layer
+        // The number of data holders is one more than the number of layers
         std::vector<cv::GMat> outs(layers.size() + 1);
         MapIdToLayerData::iterator it = layers.begin();
         int i = 0;
         while (1)
         {
             LayerData &ld = it->second;
+            // GLayer defines a trivial node
             outs[i + 1] = GLayer::on(outs[i], makePtr<LayerData>(ld));
             it++;
+            // Stop the loop when it is after the last layer or after the layer
+            // pointed by lastld.
             if (it == layers.end() || (it->second.id > lastld.id))
                 break;
             i++;
         }
         cv::GComputation comp(outs[0], outs[i + 1]);
 
-        // a trivial Mat is used here because empty Mat is not accepted by GAPI;
+        // Use a trivial Mat here because empty Mat is not accepted by GAPI;
         // empty Mat will trigger exception when creating internal mat.
         cv::Mat in = Mat({ 1, 1, 1, 1 }, CV_32F);
         cv::Mat out;
+        // Create a kernel using rt_kernel function
         auto impl = cv::gapi::rt::rt_kernel<GLayer>(
             [=](const cv::Mat &in, cv::Ptr<LayerData> ld, cv::Mat &out) {
+                std::cout << "executing ld: " << ld->id << ld->name
+                          << std::endl;
                 if (!ld->flag)
                     this->forwardLayer(*ld);
             });
+        // Create a kernel package that includes the only kernel just created
+        // above.
         auto pkg = cv::gapi::kernels(impl);
+        // Execute the graph synchronously
         comp.apply(in, out, cv::compile_args(pkg));
 
 #ifdef HAVE_CUDA

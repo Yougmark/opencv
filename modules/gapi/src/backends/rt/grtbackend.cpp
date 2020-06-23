@@ -70,14 +70,92 @@ cv::gapi::GBackend cv::gapi::rt::backend()
     return this_backend;
 }
 
-// GRTExecutable implementation //////////////////////////////////////////////
-cv::gimpl::GRTExecutable::GRTExecutable(
-    ade::Graph &g, const std::vector<ade::NodeHandle> &nodes)
-    : m_g(g), m_gm(m_g)
+void cv::gimpl::GRTExecutable::nodeActorThread(
+    cv::gimpl::GRTExecutable::OperationInfo &op_info)
 {
-    // Convert list of operations (which is topologically sorted already)
-    // into an execution script.
-    ade::TypedGraph<DataQueue> qgr(g);
+    cv::gimpl::stream::Cmd cmd;
+    const auto &op = m_gm.metadata(op_info.nh).get<Op>();
+
+    // get input data queues for this node handle.
+    ade::TypedGraph<DataQueue> qgr(m_g);
+    for (auto &&in_eh : op_info.nh->inEdges())
+    {
+        if (qgr.metadata(in_eh).contains<DataQueue>())
+        {
+            qgr.metadata(in_eh).get<DataQueue>().q.pop(cmd);
+        }
+    }
+
+    // Obtain our real execution unit
+    // TODO: Should kernels be copyable?
+    GConstGRTModel gcm(m_g);
+    GRTKernel k = gcm.metadata(op_info.nh).get<Unit>().k;
+
+    // Initialize kernel's execution context:
+    // - Input parameters
+    GRTContext context;
+    context.m_args.reserve(op.args.size());
+
+    using namespace std::placeholders;
+    ade::util::transform(op.args, std::back_inserter(context.m_args),
+                         std::bind(&GRTExecutable::packArg, this, _1));
+
+    // - Output parameters.
+    // FIXME: pre-allocate internal Mats, etc, according to the known meta
+    for (const auto &out_it : ade::util::indexed(op.outs))
+    {
+        // FIXME: Can the same GArg type resolution mechanism be reused
+        // here?
+        const auto out_port = ade::util::index(out_it);
+        const auto out_desc = ade::util::value(out_it);
+        context.m_results[out_port] = magazine::getObjPtr(m_res, out_desc);
+    }
+
+    // Now trigger the executable unit
+    k.apply(context);
+
+    // As Kernels are forbidden to allocate memory for (Mat) outputs,
+    // this code seems redundant, at least for Mats
+    // FIXME: unify with cv::detail::ensure_out_mats_not_reallocated
+    // FIXME: when it's done, remove can_describe(const GMetaArg&, const
+    // GRunArgP&) and descr_of(const cv::GRunArgP &argp)
+    for (const auto &out_it : ade::util::indexed(op_info.expected_out_metas))
+    {
+        const auto out_index = ade::util::index(out_it);
+        const auto expected_meta = ade::util::value(out_it);
+
+        if (!can_describe(expected_meta, context.m_results[out_index]))
+        {
+            const auto out_meta = descr_of(context.m_results[out_index]);
+            util::throw_error(
+                std::logic_error("Output meta doesn't "
+                                 "coincide with the generated meta\n"
+                                 "Expected: " +
+                                 ade::util::to_string(expected_meta) +
+                                 "\n"
+                                 "Actual  : " +
+                                 ade::util::to_string(out_meta)));
+        }
+    }
+
+    // (?) each out edge has inEdges and outEdges?
+    // And outEdges are the inEdges of next node?
+    for (auto &&out_eh : op_info.nh->outNodes())
+    {
+        for (auto &&out_eeh : out_eh->outEdges())
+        {
+            if (qgr.metadata(out_eeh).contains<DataQueue>())
+            {
+                qgr.metadata(out_eeh).get<DataQueue>().q.push(cmd);
+            }
+        }
+    }
+}
+
+void cv::gimpl::GRTExecutable::prepScriptData(
+    const std::vector<ade::NodeHandle> &nodes)
+{
+    ade::TypedGraph<DataQueue> qgr(m_g);
     for (auto &nh : nodes)
     {
         switch (m_gm.metadata(nh).get<NodeType>().t)
@@ -85,6 +163,11 @@ cv::gimpl::GRTExecutable::GRTExecutable(
         case NodeType::OP:
         {
             m_script.push_back({ nh, GModel::collectOutputMeta(m_gm, nh) });
+            for (auto eh : nh->inEdges())
+            {
+                qgr.metadata(eh).set(DataQueue(10));
+                m_internal_queues.insert(&qgr.metadata(eh).get<DataQueue>().q);
+            }
             break;
         }
         case NodeType::DATA:
@@ -105,10 +188,6 @@ cv::gimpl::GRTExecutable::GRTExecutable(
                 auto &mat = m_res.slot<cv::Mat>()[desc.rc];
                 createMat(mat_desc, mat);
             }
-
-            // add data queue that buffers data or pipelined execution cmd
-            qgr.metadata(nh).set(DataQueue(100));
-            m_internal_queues.insert(&qgr.metadata(nh).get<DataQueue>().q);
             break;
         }
         default:
@@ -117,6 +196,20 @@ cv::gimpl::GRTExecutable::GRTExecutable(
         }
         }
     }
+    // note that the last operation is executed in run()
+    for (auto it = m_script.begin(); it < m_script.end() - 1; it++)
+    {
+        m_threads.emplace_back(&cv::gimpl::GRTExecutable::nodeActorThread, this,
+                               std::ref(*it));
+    }
+}
+
+// GRTExecutable implementation //////////////////////////////////////////////
+cv::gimpl::GRTExecutable::GRTExecutable(
+    ade::Graph &g, const std::vector<ade::NodeHandle> &nodes)
+    : m_g(g), m_gm(m_g)
+{
+    prepScriptData(nodes);
 }
 
 // FIXME: Document what it does
@@ -188,12 +281,46 @@ void cv::gimpl::GRTExecutable::run(std::vector<InObj> &&input_objs,
         }
     }
 
+    // assuming only one source node
+    auto &src_op_info = m_script[0];
+    // random command
+    cv::gimpl::stream::Cmd cmd;
+    // push something to the input data queues of the source node
+    for (auto &&in_eh : src_op_info.nh->inEdges())
+    {
+        ade::TypedGraph<DataQueue> qgr(m_g);
+        if (qgr.metadata(in_eh).contains<DataQueue>())
+        {
+            printf("pushing something to the input data queues of the source "
+                   "node\n");
+            qgr.metadata(in_eh).get<DataQueue>().q.push(cmd);
+        }
+    }
+
+    nodeActorThread(m_script.back());
+    printf("last node called\n");
+    for (auto &t : m_threads)
+        t.join();
+    m_threads.clear();
     // OpenCV backend execution is not a rocket science at all.
     // Simply invoke our kernels in the proper order.
+    /*
     GConstGRTModel gcm(m_g);
     for (auto &op_info : m_script)
     {
         const auto &op = m_gm.metadata(op_info.nh).get<Op>();
+
+        // get input data queues for this node handle.
+        ade::TypedGraph<DataQueue> qgr(m_g);
+        for (auto &&in_eh : op_info.nh->inEdges())
+        {
+            if (qgr.metadata(in_eh).contains<DataQueue>())
+            {
+                printf("poping input command\n");
+                qgr.metadata(in_eh).get<DataQueue>().q.pop(cmd);
+            }
+        }
+        printf("popped all input command\n");
 
         // Obtain our real execution unit
         // TODO: Should kernels be copyable?
@@ -246,7 +373,22 @@ void cv::gimpl::GRTExecutable::run(std::vector<InObj> &&input_objs,
                                      ade::util::to_string(out_meta)));
             }
         }
+
+        // (?) each out edge has inEdges and outEdges?
+        // And outEdges are the inEdges of next node?
+        for (auto &&out_eh : op_info.nh->outNodes())
+        {
+            for (auto &&out_eeh : out_eh->outEdges())
+            {
+                if (qgr.metadata(out_eeh).contains<DataQueue>())
+                {
+                    qgr.metadata(out_eeh).get<DataQueue>().q.push(cmd);
+                    printf("pushed output command\n");
+                }
+            }
+        }
     } // for(m_script)
+*/
 
     for (auto &it : output_objs)
         magazine::writeBack(m_res, it.first, it.second);

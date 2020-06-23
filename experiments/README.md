@@ -418,12 +418,12 @@ to be figured out.
 
 ## How does DNN module in OpenCV work
 
-An DNN application needs to include only `opencv2/dnn.hpp`, which refers to
+A DNN application only needs to include `opencv2/dnn.hpp`, which refers to
 `modules/dnn/include/dnn/dnn.hpp`, a file that contains most DNN interfaces such
 as `readNet`, the classess of `Net`, `Model`, and `Layer` (for customizing layers).
 
 The `Net` class represents the neural network.  An application calls
-`Net::forward()` to start forward calculation, which loops over layers' forward
+`Net::forward()` to start forward inference, which loops over layers' forward
 function.  However, it is slightly different for CUDA backends, with which the
 `forward` function of each `CUDABackendNode` is called instead of the layer's
 forward function.  The `CUDABackendNode` is initialized in `initCUDA` in each
@@ -433,6 +433,8 @@ implementation structure `struct Net::Impl` of the Net class.
 Ownership and calling graph:
 Net::forward()  "modules/dnn/src/dnn.cpp"
   Net::Impl::setUpNet  "modules/dnn/src/dnn.cpp"
+    Net::Impl::allocateLayers
+      Net::Impl::allocateLayer
     Net::Impl::initBackend
       Net::Impl::initCUDABackend
         cv::dnn::LayerData::layerInstance  (Ptr<cv::dnn::Layer>
@@ -444,7 +446,7 @@ Net::forward()  "modules/dnn/src/dnn.cpp"
       CUDABackendNode::forward()  -- CUDABackendNode is a base class; we use convolution as an example in the following procedure.  declared in "modules/dnn/src/op_cuda.hpp"
         cv::dnn::cuda4dnn::ConvolutionOp::forward() -- ConvolutionOp inherites CUDABandendNode.  "modules/dnn/src/cuda4dnn/primitives/convolution.hpp"
           cv::dnn::cuda4dnn::csl::Convolution::convolve()    "modules/dnn/src/cuda4dnn/csl/tensor_ops.hpp"
-	    cv::dnn::cuda4dnn::csl::cudnn::convolve()  -- it wraps cudnnConvolutionForward function.   "modules/dnn/src/cuda4dnn/csl/cudnn/convolution.hpp"
+            cv::dnn::cuda4dnn::csl::cudnn::convolve()  -- it wraps cudnnConvolutionForward function.   "modules/dnn/src/cuda4dnn/csl/cudnn/convolution.hpp"
 
 
 Similarly, for pooling:
@@ -455,8 +457,29 @@ Net::forward()  "modules/dnn/src/dnn.cpp"
       CUDABackendNode::forward()  -- CUDABackendNode is a base class; we use convolution as an example in the following procedure.  declared in "modules/dnn/src/op_cuda.hpp"
         cv::dnn::cuda4dnn::PoolingOp::forward() -- PoolingOp inherites CUDABandendNode.  "modules/dnn/src/cuda4dnn/primitives/pooling.hpp"
           cv::dnn::cuda4dnn::csl::Pooling::pool()    "modules/dnn/src/cuda4dnn/csl/tensor_ops.hpp"
-	    cv::dnn::cuda4dnn::csl::cudnn::pool()  -- it wraps cudnnPoolingForward function.   "modules/dnn/src/cuda4dnn/csl/cudnn/pooling.hpp"
+            cv::dnn::cuda4dnn::csl::cudnn::pool()  -- it wraps cudnnPoolingForward function.   "modules/dnn/src/cuda4dnn/csl/cudnn/pooling.hpp"
+          // it only modifies the output
 
+
+Slightly differently, for BatchNorm:
+Net::forward()  "modules/dnn/src/dnn.cpp"
+  Net::forwardToLayer()  "dnn.cpp"
+    Net::forwardLayer()  "dnn.cpp"
+      // for CUDA backend
+      CUDABackendNode::forward()  -- CUDABackendNode is a base class; we use convolution as an example in the following procedure.  declared in "modules/dnn/src/op_cuda.hpp"
+        cv::dnn::cuda4dnn::BatchNormOp::forward() -- BatchNormOp inherites CUDABandendNode.  "modules/dnn/src/cuda4dnn/primitives/batch_norm.hpp"
+          cv::dnn::cuda4dnn::kernels::scaleN_with_biasN()    declared in "modules/dnn/src/cuda4dnn/kernels/scale_shift.hpp"; implemented in "modules/dnn/src/cuda/scale_shift.cu"
+          // it only modifies the output
+
+Slightly differently, for ReLU:
+Net::forward()  "modules/dnn/src/dnn.cpp"
+  Net::forwardToLayer()  "dnn.cpp"
+    Net::forwardLayer()  "dnn.cpp"
+      // for CUDA backend
+      CUDABackendNode::forward()  -- CUDABackendNode is a base class; we use convolution as an example in the following procedure.  declared in "modules/dnn/src/op_cuda.hpp"
+        cv::dnn::cuda4dnn::ReLUOp::forward() -- ReLUOp inherites CUDABandendNode.  "modules/dnn/src/cuda4dnn/primitives/activation.hpp"
+          cv::dnn::cuda4dnn::kernels::relu()    declared in "modules/dnn/src/cuda4dnn/kernels/activations.hpp"; implemented in "modules/dnn/src/cuda/activations.cu"
+          // it only modifies the output
 
 Slightly differently, for region:
 Net::forward()  "modules/dnn/src/dnn.cpp"
@@ -466,6 +489,7 @@ Net::forward()  "modules/dnn/src/dnn.cpp"
       CUDABackendNode::forward()  -- CUDABackendNode is a base class; we use convolution as an example in the following procedure.  declared in "modules/dnn/src/op_cuda.hpp"
         cv::dnn::cuda4dnn::RegionOp::forward() -- RegionOp inherites CUDABandendNode.  "modules/dnn/src/cuda4dnn/primitives/region.hpp"
           cv::dnn::cuda4dnn::kernels::region()    declared in "modules/dnn/src/cuda4dnn/kernels/region.hpp"; implemented in "modules/dnn/src/cuda/region.cu"
+          // it only modifies the output
 
 All layers are defined in `modules/dnn/include/opencv2/dnn/all_layers.hpp` and
 implemented in separate files like `modules/dnn/src/layers/convolution_layer.cpp`.
