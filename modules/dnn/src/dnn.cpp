@@ -93,6 +93,8 @@ static bool DNN_CHECK_NAN_INF = utils::getConfigurationParameterBool("OPENCV_DNN
 static bool DNN_CHECK_NAN_INF_DUMP = utils::getConfigurationParameterBool("OPENCV_DNN_CHECK_NAN_INF_DUMP", false);
 static bool DNN_CHECK_NAN_INF_RAISE_ERROR = utils::getConfigurationParameterBool("OPENCV_DNN_CHECK_NAN_INF_RAISE_ERROR", false);
 
+static int DNN_PARAM_BUFFER_SIZE = (int)utils::getConfigurationParameterSizeT("OPENCV_DNN_BUFFER_SIZE", 5);
+
 using std::vector;
 using std::map;
 using std::make_pair;
@@ -588,10 +590,24 @@ struct LayerData
     std::vector<Ptr<BackendWrapper> > inputBlobsWrappers;
     std::vector<Ptr<BackendWrapper> > internalBlobsWrappers;
 
+
     Ptr<Layer> layerInstance;
     std::vector<Mat> outputBlobs;
     std::vector<Mat*> inputBlobs;
+
     std::vector<Mat> internals;
+
+    // Multiple copies of output and input blob wrappers for pipelined and
+    // parallel execution.
+    std::vector<std::vector<Ptr<BackendWrapper>>> outputBlobsWrappersVec;
+    std::vector<std::vector<Ptr<BackendWrapper>>> inputBlobsWrappersVec;
+    std::vector<std::vector<Ptr<BackendWrapper>>> internalBlobsWrappersVec;
+    // Multiple copies of output and input blobs for pipelined and
+    // parallel execution.
+    std::vector<std::vector<Mat>> outputBlobsVec;
+    std::vector<std::vector<Mat*>> inputBlobsVec;
+    std::vector<std::vector<Mat>> internalBlobsVec;
+
     // Computation nodes of implemented backends (except DEFAULT).
     std::map<int, Ptr<BackendNode> > backendNodes;
     // Flag for skip layer computation for specific backend.
@@ -887,8 +903,9 @@ public:
         return refIt->second;
     }
 
-    // Reuse data allocated in <host> inside the <user> blob.
-    void reuse(const LayerPin& host, const LayerPin& user)
+    void reuse(const LayerPin &host, const LayerPin &user,
+               std::map<LayerPin, LayerPin> &reuseMap,
+               std::map<LayerPin, int> &refCounter)
     {
         CV_Assert(reuseMap.find(user) == reuseMap.end());
         CV_Assert(reuseMap.find(host) != reuseMap.end());
@@ -907,16 +924,30 @@ public:
         }
     }
 
-    // Decrease references counter to allocated memory inside specific blob.
-    void releaseReference(const LayerPin& lp)
+    // Reuse data allocated in <host> inside the <user> blob.
+    void reuse(const LayerPin& host, const LayerPin& user)
+    {
+        reuse(host, user, reuseMap, refCounter);
+    }
+
+    void releaseReference(const LayerPin &lp,
+                          std::map<LayerPin, LayerPin> &reuseMap,
+                          std::map<LayerPin, int> &refCounter)
     {
         std::map<LayerPin, LayerPin>::iterator mapIt = reuseMap.find(lp);
         CV_Assert(mapIt != reuseMap.end());
 
-        std::map<LayerPin, int>::iterator refIt = refCounter.find(mapIt->second);
+        std::map<LayerPin, int>::iterator refIt =
+            refCounter.find(mapIt->second);
         CV_Assert(refIt != refCounter.end());
         CV_Assert(refIt->second > 0);
         refIt->second -= 1;
+    }
+
+    // Decrease references counter to allocated memory inside specific blob.
+    void releaseReference(const LayerPin& lp)
+    {
+        releaseReference(lp, reuseMap, refCounter);
     }
 
     void releaseReferences(const std::vector<LayerPin>& pins)
@@ -927,7 +958,18 @@ public:
         }
     }
 
-    void reuseOrCreate(const MatShape& shape, const LayerPin& lp, Mat& dst, bool use_half)
+    void releaseReferences(const std::vector<LayerPin> &pins,
+                           size_t bufIdx)
+    {
+        for (int i = 0; i < pins.size(); i++)
+        {
+            releaseReference(pins[i], reuseMapVec.at(bufIdx), refCounterVec.at(bufIdx));
+        }
+    }
+
+    void reuseOrCreate(const MatShape &shape, const LayerPin &lp, Mat &dst,
+                       bool use_half, std::map<LayerPin, int> &refCounter,
+                       std::map<LayerPin, Mat> &memHosts, std::map<LayerPin, LayerPin> &reuseMap)
     {
         if (!DNN_DISABLE_MEMORY_OPTIMIZATIONS)
         {
@@ -959,7 +1001,7 @@ public:
             }
             if (!bestBlob.empty())
             {
-                reuse(bestBlobPin, lp);
+                reuse(bestBlobPin, lp, reuseMap, refCounter);
                 dst = bestBlob.reshape(1, 1).colRange(0, targetTotal).reshape(1, shape);
                 return;
             }
@@ -969,25 +1011,32 @@ public:
             // if dst already has been allocated with total(shape) elements,
             // it won't be recreated and pointer of dst.data remains the same.
             dst.create(shape, use_half ? CV_16S : CV_32F);
-            addHost(lp, dst);
+            addHost(lp, dst, reuseMap, memHosts);
         }
     }
 
-    void allocateBlobsForLayer(LayerData &ld, const LayerShapes& layerShapes,
-                               std::vector<LayerPin>& pinsForInternalBlobs,
+    void reuseOrCreate(const MatShape &shape, const LayerPin &lp, Mat &dst,
+                       bool use_half)
+    {
+        reuseOrCreate(shape, lp, dst, use_half, refCounter, memHosts, reuseMap);
+    }
+
+    void allocBlobsHelper(LayerData &ld, const LayerShapes &layerShapes,
+                               std::vector<LayerPin> &pinsForInternalBlobs,
+                               std::vector<Mat> &outputBlobs,
+                               std::vector<Mat> &internalBlobs,
+                               std::vector<Mat *> &inputBlobs,
+                               std::map<LayerPin, LayerPin> &reuseMap,
+                               std::map<LayerPin, int> &refCounter,
+                               std::map<LayerPin, Mat> &memHosts,
                                bool use_half = false)
     {
-        CV_TRACE_FUNCTION();
+        const ShapesVec &outShapes = layerShapes.out;
+        const ShapesVec &internalShapes = layerShapes.internal;
 
-        pinsForInternalBlobs.clear();
+        // layer produce at least one output blob
+        outputBlobs.resize(std::max((size_t)1, outShapes.size()));
 
-        std::vector<Mat>& outputBlobs = ld.outputBlobs,
-                &internalBlobs = ld.internals;
-
-        const ShapesVec& outShapes = layerShapes.out,
-                internalShapes = layerShapes.internal;
-
-        outputBlobs.resize(std::max((size_t)1, outShapes.size())); //layer produce at least one output blob
         internalBlobs.resize(internalShapes.size());
 
         CV_Assert(ld.requiredOutputs.size() <= outShapes.size());
@@ -996,7 +1045,7 @@ public:
         bool inPlace = false;
         if (layerShapes.supportInPlace)
         {
-            if (ld.inputBlobs.size() == 1)
+            if (inputBlobs.size() == 1)
             {
                 // Get number of references to the input memory.
                 int numRef = numReferences(ld.inputBlobsId[0]);
@@ -1006,50 +1055,101 @@ public:
         }
 
         ShapesVec shapes(outShapes);
-        shapes.insert(shapes.end(), internalShapes.begin(), internalShapes.end());
-        std::vector<Mat*> blobs;
-        for(int i = 0; i < outputBlobs.size(); i++)
+        shapes.insert(shapes.end(), internalShapes.begin(),
+                      internalShapes.end());
+
+        std::vector<Mat *> blobs;
+        for (int i = 0; i < outputBlobs.size(); i++)
         {
             blobs.push_back(&outputBlobs[i]);
         }
 
-        for(int i = 0; i < internalBlobs.size(); i++)
+        for (int i = 0; i < internalBlobs.size(); i++)
         {
             blobs.push_back(&internalBlobs[i]);
-            if (total(internalShapes[i]))
-            {
-                pinsForInternalBlobs.push_back(LayerPin(ld.id, ld.outputBlobs.size() + i));
-            }
+            if (total(internalShapes[i]) == 0)
+                continue;
+            pinsForInternalBlobs.push_back(
+                LayerPin(ld.id, outputBlobs.size() + i));
         }
 
         addReferences(pinsForInternalBlobs);
 
-        std::map<int, std::vector<int> > idxSizes;
-        for(int i = 0; i < shapes.size(); i++)
+        // Group shapes by sizes
+        std::map<int, std::vector<int>> idxSizes;
+        for (int i = 0; i < shapes.size(); i++)
         {
             idxSizes[total(shapes[i])].push_back(i);
         }
 
-        std::map<int, std::vector<int> >::reverse_iterator it;
-        for(it = idxSizes.rbegin(); it != idxSizes.rend(); it++)
+        // Traverse shapes from large to small
+        for (std::map<int, std::vector<int>>::reverse_iterator it =
+                 idxSizes.rbegin();
+             it != idxSizes.rend(); it++)
         {
-            for(int j = 0; j < it->second.size(); j++)
+            for (int j = 0; j < it->second.size(); j++)
             {
                 int index = it->second[j];
-                if (total(shapes[index]))
+                if (total(shapes[index]) == 0)
+                    continue;
+                LayerPin blobPin(ld.id, index);
+                if (index < outShapes.size() && inPlace)
                 {
-                    LayerPin blobPin(ld.id, index);
-                    if (index < outShapes.size() && inPlace)
-                    {
-                        CV_Assert(ld.inputBlobs[0]->total() == total(shapes[index]));
-                        ld.outputBlobs[index] = ld.inputBlobs[0]->reshape(1, shapes[index]);
-                        reuse(ld.inputBlobsId[0], blobPin);
-                    }
-                    else
-                        reuseOrCreate(shapes[index], blobPin, *blobs[index], use_half);
+                    CV_Assert(inputBlobs[0]->total() == total(shapes[index]));
+                    outputBlobs[index] =
+                        inputBlobs[0]->reshape(1, shapes[index]);
+                    reuse(ld.inputBlobsId[0], blobPin, reuseMap, refCounter);
+                }
+                else
+                {
+                    reuseOrCreate(shapes[index], blobPin, *blobs[index],
+                                  use_half, refCounter, memHosts, reuseMap);
                 }
             }
         }
+    }
+
+    void allocateMultiBlobsForLayer(LayerData &ld,
+                                    const LayerShapes &layerShapes,
+                                    std::vector<std::vector<LayerPin>> &pinsForInternalBlobsVec,
+                                    bool use_half = false)
+    {
+        reuseMapVec.resize(DNN_PARAM_BUFFER_SIZE);
+        refCounterVec.resize(DNN_PARAM_BUFFER_SIZE);
+        memHostsVec.resize(DNN_PARAM_BUFFER_SIZE);
+        for (size_t b = 0; b < ld.outputBlobsWrappersVec.size(); b++)
+        {
+            std::vector<Mat> &outputBlobs = ld.outputBlobsVec.at(b);
+            std::vector<Mat> &internalBlobs = ld.internalBlobsVec.at(b);
+            std::vector<Mat *> &inputBlobs = ld.inputBlobsVec.at(b);
+            std::map<LayerPin, LayerPin> &reuseMap = reuseMapVec.at(b);
+            std::map<LayerPin, int> &refCounter = refCounterVec.at(b);
+            std::map<LayerPin, Mat> &memHosts = memHostsVec.at(b);
+            // reference counter of the internal blobs are incremented in
+            // allocBlobsHelper.
+            std::vector<LayerPin> pinsForInternalBlobsThisIter;
+            allocBlobsHelper(ld, layerShapes, pinsForInternalBlobsThisIter,
+                             outputBlobs, internalBlobs, inputBlobs, reuseMap,
+                             refCounter, memHosts, use_half);
+            // (?) Is it necessary to store these pins and release blobs in the
+            // end of allocateLayer function? Or can we do it here already?
+            pinsForInternalBlobsVec.push_back(pinsForInternalBlobsThisIter);
+        }
+    }
+
+    void allocateBlobsForLayer(LayerData &ld, const LayerShapes &layerShapes,
+                               std::vector<LayerPin> &pinsForInternalBlobs,
+                               bool use_half = false)
+    {
+        CV_TRACE_FUNCTION();
+
+        std::vector<LayerPin> pinsForInternalBlobsScoped;
+        allocBlobsHelper(ld, layerShapes, pinsForInternalBlobsScoped,
+                         ld.outputBlobs, ld.internals, ld.inputBlobs,
+                         reuseMap, refCounter, memHosts, use_half);
+        pinsForInternalBlobs.insert(pinsForInternalBlobs.begin(),
+                                    pinsForInternalBlobsScoped.begin(),
+                                    pinsForInternalBlobsScoped.end());
     }
 
     // Clear internal state. Calls before an every reallocation.
@@ -1064,11 +1164,18 @@ public:
 
 private:
     // Register allocated memory.
-    void addHost(const LayerPin& lp, const Mat& mat)
+    void addHost(const LayerPin &lp, const Mat &mat,
+                       std::map<LayerPin, LayerPin> &reuseMap,
+                       std::map<LayerPin, Mat> &memHosts)
     {
         CV_Assert(memHosts.find(lp) == memHosts.end());
         reuseMap[lp] = lp;
         memHosts[lp] = mat;
+    }
+
+    void addHost(const LayerPin& lp, const Mat& mat)
+    {
+        addHost(lp, mat, reuseMap, memHosts);
     }
 
     std::map<LayerPin, int> refCounter;
@@ -1076,6 +1183,13 @@ private:
     // For origin blobs key == value.
     std::map<LayerPin, LayerPin> reuseMap;
     std::map<LayerPin, Mat> memHosts;
+
+    // Multiple copies of these maps for pipelined and parallel execution.
+    std::vector<std::map<LayerPin, int>> refCounterVec;
+    // Maps pin to origin blob (for whom memory was allocated firstly).
+    // For origin blobs key == value.
+    std::vector<std::map<LayerPin, LayerPin>> reuseMapVec;
+    std::vector<std::map<LayerPin, Mat>> memHostsVec;
 };
 
 static Ptr<BackendWrapper> wrapMat(int backendId, int targetId, cv::Mat& m)
@@ -2406,7 +2520,7 @@ struct Net::Impl : public detail::NetImplBase
 
         LayerData &ld = layers[lid];
 
-        //already allocated
+        // already allocated
         if (ld.flag)
             return;
 
@@ -2429,33 +2543,75 @@ struct Net::Impl : public detail::NetImplBase
         printf("\n");
 #endif
 
-        //determine parent layers
+        // determine parent layers
         for (size_t i = 0; i < ninputs; i++)
             ld.inputLayersId.insert(ld.inputBlobsId[i].lid);
 
-        //allocate parents
-        for (set<int>::iterator i = ld.inputLayersId.begin(); i != ld.inputLayersId.end(); i++)
+        // allocate parents
+        for (set<int>::iterator i = ld.inputLayersId.begin();
+             i != ld.inputLayersId.end(); i++)
             allocateLayer(*i, layersShapes);
 
-        //bind inputs
-        if (ld.id == 0)  // DataLayer
+        // bind inputs
+        ld.inputBlobsWrappersVec.resize(DNN_PARAM_BUFFER_SIZE);
+        ld.inputBlobsVec.resize(DNN_PARAM_BUFFER_SIZE);
+        if (ld.id == 0) // DataLayer
         {
             ninputs = netInputLayer->inputsData.size();
+
+            // Bind the input to the input layer
             ld.inputBlobsWrappers.resize(ninputs);
             for (size_t i = 0; i < ninputs; i++)
                 ld.inputBlobsWrappers[i] = wrap(netInputLayer->inputsData[i]);
+
+            // Bind inputs in the buffer to the input layer
+            for (auto it = ld.inputBlobsWrappersVec.begin();
+                 it < ld.inputBlobsWrappersVec.end(); it++)
+            {
+                it->resize(ninputs);
+                for (size_t i = 0; i < ninputs; i++)
+                {
+                    it->at(i) = wrap(netInputLayer->inputsData[i]);
+                }
+            }
         }
         else
         {
+            // Bind the inputs to prior outputs
             ld.inputBlobs.resize(ninputs);
             ld.inputBlobsWrappers.resize(ninputs);
             for (size_t i = 0; i < ninputs; i++)
             {
                 LayerPin from = ld.inputBlobsId[i];
                 CV_Assert(from.valid());
-                CV_DbgAssert(layers.count(from.lid) && (int)layers[from.lid].outputBlobs.size() > from.oid);
+                CV_DbgAssert(layers.count(from.lid) &&
+                             (int)layers[from.lid].outputBlobs.size() >
+                                 from.oid);
                 ld.inputBlobs[i] = &layers[from.lid].outputBlobs[from.oid];
-                ld.inputBlobsWrappers[i] = layers[from.lid].outputBlobsWrappers[from.oid];
+                ld.inputBlobsWrappers[i] =
+                    layers[from.lid].outputBlobsWrappers[from.oid];
+            }
+
+            // Bind inputs in the buffer to prior outputs
+            for (size_t b = 0; b < ld.inputBlobsWrappersVec.size(); b++)
+            {
+                ld.inputBlobsWrappersVec[b].resize(ninputs);
+                ld.inputBlobsVec[b].resize(ninputs);
+                for (size_t i = 0; i < ninputs; i++)
+                {
+                    LayerPin from = ld.inputBlobsId[i];
+                    CV_Assert(from.valid());
+                    // Wait until outputBlobsVec is prepared to uncomment these
+                    // lines.
+                    CV_DbgAssert(
+                        layers.count(from.lid) &&
+                        (int)layers[from.lid].outputBlobsVec[b].size() >
+                            from.oid);
+                    ld.inputBlobsVec[b][i] =
+                        &layers[from.lid].outputBlobsVec[b][from.oid];
+                    ld.inputBlobsWrappersVec[b][i] =
+                        layers[from.lid].outputBlobsWrappersVec[b][from.oid];
+                }
             }
         }
 
@@ -2464,17 +2620,55 @@ struct Net::Impl : public detail::NetImplBase
         CV_Assert(layerShapesIt != layersShapes.end());
 
         std::vector<LayerPin> pinsForInternalBlobs;
-        blobManager.allocateBlobsForLayer(ld, layerShapesIt->second, pinsForInternalBlobs,
-                                          preferableBackend == DNN_BACKEND_OPENCV &&
-                                          preferableTarget == DNN_TARGET_OPENCL_FP16);
+
+        blobManager.allocateBlobsForLayer(
+            ld, layerShapesIt->second, pinsForInternalBlobs,
+            preferableBackend == DNN_BACKEND_OPENCV &&
+                preferableTarget == DNN_TARGET_OPENCL_FP16);
+
         ld.outputBlobsWrappers.resize(ld.outputBlobs.size());
         for (int i = 0; i < ld.outputBlobs.size(); ++i)
             ld.outputBlobsWrappers[i] = wrap(ld.outputBlobs[i]);
 
-        /* CUDA backend has its own system for internal blobs; we don't need these */
-        ld.internalBlobsWrappers.resize((preferableBackend == DNN_BACKEND_CUDA) ? 0 : ld.internals.size());
+        /* CUDA backend has its own system for internal blobs; we don't need
+         * these */
+        ld.internalBlobsWrappers.resize(
+            (preferableBackend == DNN_BACKEND_CUDA) ? 0 : ld.internals.size());
         for (int i = 0; i < ld.internalBlobsWrappers.size(); ++i)
             ld.internalBlobsWrappers[i] = wrap(ld.internals[i]);
+
+        ld.outputBlobsWrappersVec.resize(DNN_PARAM_BUFFER_SIZE);
+        ld.internalBlobsWrappersVec.resize(DNN_PARAM_BUFFER_SIZE);
+        ld.outputBlobsVec.resize(DNN_PARAM_BUFFER_SIZE);
+        ld.internalBlobsVec.resize(DNN_PARAM_BUFFER_SIZE);
+        std::vector<std::vector<LayerPin>> pinsForInternalBlobsVec;
+        blobManager.allocateMultiBlobsForLayer(
+            ld, layerShapesIt->second, pinsForInternalBlobsVec,
+            preferableBackend == DNN_BACKEND_OPENCV &&
+                preferableTarget == DNN_TARGET_OPENCL_FP16);
+
+        for (size_t b = 0; b < ld.outputBlobsVec.size(); b++)
+        {
+            ld.outputBlobsWrappersVec[b].resize(ld.outputBlobsVec[b].size());
+            for (int i = 0; i < ld.outputBlobsVec[b].size(); i++)
+            {
+                ld.outputBlobsWrappersVec[b][i] = wrap(ld.outputBlobsVec[b][i]);
+            }
+        }
+
+        if (preferableBackend == DNN_BACKEND_CUDA)
+        {
+            for (size_t b = 0; b < ld.internalBlobsVec.size(); b++)
+            {
+                ld.internalBlobsWrappersVec[b].resize(
+                    ld.internalBlobsVec[b].size());
+                for (int i = 0; i < ld.internalBlobsVec[b].size(); i++)
+                {
+                    ld.internalBlobsWrappersVec[b][i] =
+                        wrap(ld.internalBlobsVec[b][i]);
+                }
+            }
+        }
 
         Ptr<Layer> layerPtr = ld.getLayerInstance();
         {
@@ -2499,6 +2693,11 @@ struct Net::Impl : public detail::NetImplBase
         // After allocation of layer, we decrease counters to it's input blobs.
         blobManager.releaseReferences(ld.inputBlobsId);
         blobManager.releaseReferences(pinsForInternalBlobs);
+
+        for (size_t b = 0; b < pinsForInternalBlobsVec.size(); b++)
+        {
+            blobManager.releaseReferences(pinsForInternalBlobsVec[b], b);
+        }
 
         ld.flag = 1;
     }
@@ -3214,10 +3413,12 @@ struct Net::Impl : public detail::NetImplBase
         // Create a kernel using rt_kernel function
         auto impl = cv::gapi::rt::rt_kernel<GLayer>(
             [=](const cv::Mat &in, cv::Ptr<LayerData> ld, cv::Mat &out) {
-                std::cout << "executing ld: " << ld->id << ld->name
-                          << std::endl;
-                if (!ld->flag)
+                if (!ld->flag && !ld->skip)
+                {
+                    std::cout << "executing ld: " << ld->id << ld->name
+                              << std::endl;
                     this->forwardLayer(*ld);
+                }
             });
         // Create a kernel package that includes the only kernel just created
         // above.
