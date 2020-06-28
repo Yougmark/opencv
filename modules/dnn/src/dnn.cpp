@@ -58,14 +58,17 @@
 #include <memory>
 #include <opencv2/dnn/shape_utils.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include <opencv2/core/utils/configuration.private.hpp>
 #include <opencv2/core/utils/logger.hpp>
+#include <opencv2/core/private.hpp>
 
 #include <opencv2/core/cuda.hpp>
 
 #include <opencv2/gapi/core.hpp>
 #include <opencv2/gapi/rt/grtkernel.hpp>
+#include <opencv2/gapi/streaming/cap.hpp>
 
 namespace cv {
 namespace dnn {
@@ -3374,6 +3377,7 @@ struct Net::Impl : public detail::NetImplBase
 
     void forwardToLayerGraph(LayerData &lastld, bool clearFlags = true)
     {
+        cv::utils::logging::setLogLevel(utils::logging::LOG_LEVEL_VERBOSE);
         CV_TRACE_FUNCTION();
 
         if (clearFlags)
@@ -3423,8 +3427,21 @@ struct Net::Impl : public detail::NetImplBase
         // Create a kernel package that includes the only kernel just created
         // above.
         auto pkg = cv::gapi::kernels(impl);
-        // Execute the graph synchronously
-        comp.apply(in, out, cv::compile_args(pkg));
+        // Execute the graph asynchronously
+        cv::Mat street_mat = cv::imread(cv::utils::findDataFile("dnn/street.png"));
+        cv::GStreamingCompiled stream_comp = comp.compileStreaming(
+            cv::descr_of(street_mat),
+            cv::compile_args(pkg));
+        stream_comp.setSource(
+            gapi::wip::make_src<cv::gapi::wip::GCaptureSource>(
+                cv::utils::findDataFile("dnn/street.png")));
+        stream_comp.start();
+        while (stream_comp.pull(cv::gout(out)))
+        {
+            break;
+        }
+        stream_comp.stop();
+        // comp.apply(in, out, cv::compile_args(pkg));
 
 #ifdef HAVE_CUDA
         if (preferableBackend == DNN_BACKEND_CUDA)
