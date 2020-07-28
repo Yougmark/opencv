@@ -153,6 +153,7 @@ int main(int argc, char** argv)
     net.setPreferableTarget(
         cv::dnn::DNN_TARGET_CUDA); // parser.get<int>("target"));
     std::vector<String> outNames = net.getUnconnectedOutLayersNames();
+    net.enableFusion(false);
 
     // Create a window
     static const std::string kWinName = "Deep learning object detection in OpenCV";
